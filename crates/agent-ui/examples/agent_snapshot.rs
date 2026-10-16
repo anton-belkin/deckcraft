@@ -87,6 +87,22 @@ fn demo(dir: &std::path::Path) -> (Session, ShapeId) {
     // The layer: client data, topics in every state, prepared answers, decisions.
     let cover = title[1].0;
     run(&mut s, "agent.private", json!({"slide": 1, "shape": cover, "words": "Acme Holdings AG"}));
+    // The file's own context: two entries by the agent, one by the presenter.
+    run(
+        &mut s,
+        "agent.addFileContext",
+        json!({"actor": "agent", "title": "What this deck is", "kind": "about", "text": "Q3 results for the board of the client, presented on 21 October; slide 2 carries the numbers."}),
+    );
+    run(
+        &mut s,
+        "agent.addFileContext",
+        json!({"actor": "agent", "title": "Audience", "kind": "audience", "text": "Board members; the CFO reads every number against the model."}),
+    );
+    run(
+        &mut s,
+        "agent.addFileContext",
+        json!({"title": "House rules", "kind": "rules", "text": "No forecasts on slides; constant currency unless stated."}),
+    );
     // Slide 1: the title, agreed by the presenter.
     let t_cover = run(&mut s, "agent.ask", json!({"slide": 1, "shape": title[0].0, "text": "Is “Q3 Board Review” the title the board pack uses?"}));
     let q0 = t_cover["id"].as_str().unwrap().to_string();
@@ -205,6 +221,8 @@ fn main() {
     let (mut status, mut context, mut menu, mut logged_in): (Option<String>, Option<String>, Option<String>, bool) = (None, None, None, false);
     let mut size = (1440.0f32, 900.0f32);
     let mut voice: Option<String> = None;
+    let mut file_context = false;
+    let mut hover_label: Option<String> = None;
     let mut out = "agent.png".to_string();
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
@@ -219,6 +237,8 @@ fn main() {
             "--context" => context = it.next(),
             "--menu" => menu = it.next(),
             "--logged-in" => logged_in = true,
+            "--file-context" => file_context = true,
+            "--hover-label" => hover_label = it.next(),
             "--voice" => voice = it.next(),
             "--dark" => dark = true,
             "--size" => {
@@ -364,6 +384,16 @@ fn main() {
             },
         );
     harness.run_steps(8);
+    if file_context {
+        use egui_kittest::kittest::Queryable;
+        harness.get_by_label_contains("File context").click();
+        harness.run_steps(4);
+    }
+    if let Some(label) = hover_label.as_deref() {
+        use egui_kittest::kittest::Queryable;
+        harness.get_by_label(label).hover();
+        harness.run_steps(4);
+    }
     if let Some(m) = menu.as_deref() {
         use egui_kittest::kittest::Queryable;
         let label = match m {

@@ -101,11 +101,18 @@ pub(crate) fn paint(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui, painter: 
         });
         e.link = Some(link);
     }
-    // The open topic's places: a thin outline in its status colour.
+    // The open topic's places, and those of the topics the selected shape is in: a thin outline in
+    // the status colour (the selection highlights its topics without a click on a marker).
+    let lit = selected_topics(d, &l);
+    let ix = Index::of(&doc);
+    let mut outlined: Vec<String> = lit.clone();
     if st.open
-        && let Some(tp) = st.topic.as_deref().and_then(|id| l.topic(id))
+        && let Some(t) = st.topic.clone()
+        && !outlined.contains(&t)
     {
-        let ix = Index::of(&doc);
+        outlined.push(t);
+    }
+    for tp in outlined.iter().filter_map(|id| l.topic(id)) {
         for pl in topics::live(tp) {
             for (_, w) in topics::resolve(&doc, &ix, &l, pl) {
                 if w.slide != slide {
@@ -173,6 +180,9 @@ pub(crate) fn paint(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui, painter: 
             let Some(topic) = l.topic(tid) else { continue };
             pulsing |= topics::working(&l, topic);
             let r = marker(painter, right, label, *color, *unread, MARKER);
+            if lit.contains(tid) {
+                painter.rect_stroke(r.expand(2.5), CornerRadius::same(10), Stroke::new(1.5, t.text), egui::StrokeKind::Outside);
+            }
             let tip = marker_tip(d, &l, &nums, topic);
             let resp = ui.interact(r, egui::Id::new(("agent_marker", tid.as_str(), pid.as_str(), k)), Sense::click());
             resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Topic marker {label}")));
@@ -186,6 +196,10 @@ pub(crate) fn paint(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui, painter: 
     if pulsing {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(60));
     }
+    // The link under the pointer in the pane: its target, or where it is.
+    if let Some(h) = st.hover_link.clone() {
+        hover_target(app, painter, geo, &h, &p, &t);
+    }
     if let Some((tid, pid)) = clicked {
         open_topic(st, app, &tid, Some(&pid));
     } else if let Some(id) = clicked_tag {
@@ -198,6 +212,105 @@ pub(crate) fn paint(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui, painter: 
     {
         hover_card(ui, &t, &p, &link, r, geo);
     }
+}
+
+/// The topics the selected (or edited) shape is a place of.
+pub(crate) fn selected_topics(d: &deckcraft_engine::DocState, l: &layer::Layer) -> Vec<String> {
+    let sel = &d.selection;
+    let shape = sel.text.as_ref().filter(|x| !x.notes).map(|x| x.shape).or_else(|| sel.shapes.first().copied());
+    let Some(id) = shape else { return vec![] };
+    let at = deckcraft_agent::anchor::Place { slide: sel.slide, shape: Some(id), ..Default::default() };
+    topics::touching(&d.doc, &Index::of(&d.doc), l, &at)
+}
+
+/// Where a link leads: on this slide, outlined; elsewhere, a hint at the slide's edge. Nothing
+/// moves: no focus, no selection, no scrolling.
+fn hover_target(app: &SlideApp, painter: &egui::Painter, geo: &SlideGeometry, href: &str, p: &Palette, t: &Tokens) {
+    let Some(d) = app.session.active() else { return };
+    let l = layer::get(d);
+    let ix = Index::of(&d.doc);
+    let here = d.selection.slide;
+    let mut wheres: Vec<deckcraft_agent::anchor::Place> = vec![];
+    let mut was: Option<String> = None;
+    if let Some(n) = href.strip_prefix("slide:").and_then(|n| n.trim().parse::<usize>().ok()).filter(|n| *n >= 1) {
+        wheres.push(deckcraft_agent::anchor::Place::slide_only(n - 1));
+    } else if let Some((n, id)) = href.strip_prefix("shape:").and_then(|x| x.split_once('/')) {
+        if let (Ok(n), Ok(id)) = (n.trim().parse::<usize>(), id.trim().parse::<u32>())
+            && n >= 1
+        {
+            wheres.push(deckcraft_agent::anchor::Place { slide: n - 1, shape: Some(ShapeId(id)), ..Default::default() });
+        }
+    } else if let Some(r) = href.strip_prefix("place:") {
+        if let Some((tid, pid)) = topics::find_place(&d.doc, &ix, &l, r)
+            && let Some(pl) = l.topic(&tid).and_then(|t| t.places.iter().find(|x| x.id == pid))
+        {
+            wheres.extend(topics::resolve(&d.doc, &ix, &l, pl).into_iter().map(|(_, w)| w));
+        }
+    } else if let Some(r) = href.strip_prefix("topic:") {
+        if let Some(tp) = topics::find(&d.doc, &ix, &l, r).and_then(|id| l.topic(&id)) {
+            for pl in topics::live(tp) {
+                wheres.extend(topics::resolve(&d.doc, &ix, &l, pl).into_iter().map(|(_, w)| w));
+            }
+        }
+    } else if let Some(a) = href.strip_prefix("was:").and_then(|a| l.anchor(a)) {
+        // A removed place: where it was, and the shape it came after.
+        was = Some(format!("removed — was {}", if a.was.is_empty() { "here" } else { a.was.as_str() }));
+        let slide = d.doc.slides.iter().position(|s| s.id.0 == a.slide_id).unwrap_or(a.slide);
+        wheres.push(deckcraft_agent::anchor::Place::slide_only(slide));
+        if slide == here
+            && let Some(after) = a.was.split(", after ").nth(1)
+            && let Some(sh) = d.doc.slides.get(slide).and_then(|s| s.shapes.iter().find(|x| deckcraft_agent::anchor::shape_label(x) == after))
+            && let Some(r) = shape_rect(app, geo, sh.id)
+        {
+            dashed(painter, r.expand(4.0), Stroke::new(2.0, p.info));
+        }
+    }
+    let accent = t.accent;
+    let mut elsewhere: Vec<usize> = vec![];
+    for w in &wheres {
+        if w.slide != here {
+            if !elsewhere.contains(&w.slide) {
+                elsewhere.push(w.slide);
+            }
+            continue;
+        }
+        match w.shape.and_then(|id| shape_rect(app, geo, id)) {
+            Some(r) => {
+                painter.rect_filled(r.expand(4.0), CornerRadius::same(3), accent.gamma_multiply(0.12));
+                painter.rect_stroke(r.expand(4.0), CornerRadius::same(3), Stroke::new(2.5, accent), egui::StrokeKind::Outside);
+            }
+            None if was.is_none() => {
+                painter.rect_stroke(geo.slide.shrink(3.0), CornerRadius::same(2), Stroke::new(3.0, accent), egui::StrokeKind::Inside);
+            }
+            None => {}
+        }
+    }
+    if let Some(w) = was {
+        hint(painter, geo, false, &w, p.info);
+    }
+    // Off this slide: a hint at the edge the target is beyond ("slide 5 below").
+    for s in elsewhere {
+        let below = s > here;
+        hint(painter, geo, below, &format!("slide {} {}", s + 1, if below { "below" } else { "above" }), accent);
+    }
+}
+
+/// A small label with a pointer, at the top or bottom edge of the slide.
+fn hint(painter: &egui::Painter, geo: &SlideGeometry, bottom: bool, text: &str, color: Color32) {
+    let g = painter.layout_no_wrap(text.to_string(), theme::bold(11.5), Color32::WHITE);
+    let size = g.size() + vec2(28.0, 8.0);
+    let y = if bottom { geo.slide.bottom() - size.y - 6.0 } else { geo.slide.top() + 6.0 };
+    let r = Rect::from_min_size(pos2(geo.slide.center().x - size.x / 2.0, y), size);
+    painter.rect_filled(r, CornerRadius::same(9), color);
+    // The pointer: a triangle up or down.
+    let c = pos2(r.left() + 11.0, r.center().y);
+    let pts = if bottom {
+        vec![pos2(c.x - 5.0, c.y - 3.0), pos2(c.x + 5.0, c.y - 3.0), pos2(c.x, c.y + 4.0)]
+    } else {
+        vec![pos2(c.x - 5.0, c.y + 3.0), pos2(c.x + 5.0, c.y + 3.0), pos2(c.x, c.y - 4.0)]
+    };
+    painter.add(egui::Shape::convex_polygon(pts, Color32::WHITE, Stroke::NONE));
+    painter.galley(pos2(r.left() + 20.0, r.top() + 4.0), g, Color32::WHITE);
 }
 
 fn dashed(painter: &egui::Painter, r: Rect, stroke: Stroke) {

@@ -1454,3 +1454,40 @@ fn a_reject_with_a_comment_comes_back_as_a_follow_up_and_is_undoable() {
     let mine = list.as_array().unwrap().iter().find(|x| x["id"] == q["id"]).unwrap().clone();
     assert_eq!(mine["pendingNearby"].as_array().unwrap().len(), 1, "{mine}");
 }
+
+// ---------------------------------------------------------------- the file's context (next-brief E)
+
+#[test]
+fn the_file_context_reaches_the_agent_is_kept_when_sent_and_the_person_s_edits_undo() {
+    let (mut s, _, numbers) = deck();
+    let id = run(
+        &mut s,
+        "agent.addFileContext",
+        json!({"actor": "agent", "title": "Audience", "kind": "audience", "text": "The board of Acme, quarterly review"}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // The agent reads a summary with get_context and with each question.
+    let ctx = run(&mut s, "agent.context", json!({"actor": "agent"}));
+    assert!(ctx["fileContext"].as_str().unwrap().contains("Audience (audience): The board"), "{ctx}");
+    run(&mut s, "agent.ask", json!({"text": "Tone?", "slide": 2, "shape": numbers.0}));
+    let q = run(&mut s, "agent.questions", json!({"status": "pending", "actor": "agent"}));
+    assert!(q[0]["fileContext"].as_str().unwrap().contains("Audience"));
+    assert_eq!(run(&mut s, "agent.fileContext", json!({"actor": "agent"})).as_array().unwrap().len(), 1);
+    // Kept in a copy that is sent.
+    let l = crate::active_layer(&s).unwrap();
+    assert_eq!(layer::for_sending(&l, false).file_context.len(), 1);
+    // The person's edits are undoable.
+    run(&mut s, "agent.updateFileContext", json!({"id": id, "text": "The audit committee"}));
+    run(&mut s, "agent.addFileContext", json!({"title": "House rules", "kind": "rules", "text": "No forecasts on slides"}));
+    assert_eq!(crate::active_layer(&s).unwrap().file_context.len(), 2);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(crate::active_layer(&s).unwrap().file_context.len(), 1);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(crate::active_layer(&s).unwrap().file_context[0].text, "The board of Acme, quarterly review");
+    run(&mut s, "agent.removeFileContext", json!({"id": id}));
+    assert!(crate::active_layer(&s).unwrap().file_context.is_empty());
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(crate::active_layer(&s).unwrap().file_context.len(), 1);
+}

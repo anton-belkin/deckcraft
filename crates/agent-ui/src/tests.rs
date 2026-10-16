@@ -285,3 +285,42 @@ fn the_card_shows_the_agent_s_proposal_and_applies_the_option_shown() {
     assert_eq!(text, "Revenue up 42%");
     h.get_by_label_contains("Applied option B");
 }
+
+#[test]
+fn the_file_context_button_opens_it_and_the_person_s_entry_is_undoable() {
+    let (mut s, _) = deck_with_box("Revenue grew 42%");
+    s.execute("agent.addFileContext", &json!({"actor": "agent", "title": "Audience", "kind": "audience", "text": "The board, quarterly"})).unwrap();
+    crate::request_pane(true, "selection");
+    let mut h = harness(s);
+    h.get_by_label("File context (1)").click();
+    h.run_steps(2);
+    h.get_by_label("Audience");
+    h.get_by_label("Add to File Context").click();
+    h.run_steps(2);
+    for (hint, text) in [("Title", "House rules"), ("What the agent", "No forecasts on slides")] {
+        let is = |n: &egui_kittest::Node<'_>| n.accesskit_node().placeholder().is_some_and(|p| p.starts_with(hint));
+        let inputs = |h: &Harness<'static, SlideApp>| {
+            h.get_all_by_role(egui::accesskit::Role::TextInput).chain(h.get_all_by_role(egui::accesskit::Role::MultilineTextInput)).any(|n| is(&n))
+        };
+        assert!(inputs(&h), "the {hint} field");
+        if let Some(n) =
+            h.get_all_by_role(egui::accesskit::Role::TextInput).chain(h.get_all_by_role(egui::accesskit::Role::MultilineTextInput)).find(|n| is(n))
+        {
+            n.focus();
+        }
+        h.run_steps(1);
+        if let Some(n) =
+            h.get_all_by_role(egui::accesskit::Role::TextInput).chain(h.get_all_by_role(egui::accesskit::Role::MultilineTextInput)).find(|n| is(n))
+        {
+            n.type_text(text);
+        }
+        h.run_steps(1);
+    }
+    h.get_by_label("Save").click();
+    h.run_steps(3);
+    let count = |h: &Harness<'static, SlideApp>| deckcraft_agent::active_layer(&h.state().session).unwrap().file_context.len();
+    assert_eq!(count(&h), 2);
+    let _ = h.state_mut().run("edit.undo", json!({}));
+    h.run_steps(2);
+    assert_eq!(count(&h), 1, "the person's entry is undoable");
+}

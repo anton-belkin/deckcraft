@@ -335,6 +335,9 @@ pub struct Layer {
     /// last mode used in the app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<crate::context::Context>,
+    /// The file's own context: what the deck is, for whom, house rules, background.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub file_context: Vec<crate::file_context::Entry>,
     /// What happened to proposals, for the agent's event stream (memory only).
     #[serde(skip)]
     pub events: Vec<crate::proposals::Event>,
@@ -369,6 +372,7 @@ impl Layer {
             && self.notes.is_empty()
             && self.topics.is_empty()
             && self.context.is_none()
+            && self.file_context.is_empty()
     }
 
     /// The people's questions (connection checks left out).
@@ -396,6 +400,9 @@ impl Layer {
         for n in &self.notes {
             scan(&n.text);
             scan(&n.title);
+        }
+        for e in &self.file_context {
+            scan(&e.text);
         }
         for t in &self.topics {
             scan(&t.status_text);

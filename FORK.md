@@ -106,6 +106,19 @@ upstream. Each one accepted upstream removes its lines from the patch.
   pending proposal), the person's action, with a decision note "chose X: <title>"; pending
   proposals touching the same shapes become out of date. A step that no longer fits applies
   nothing: "out of date, ask the agent to redo".
+- **Pane and topics** (next-brief E). The selected (or edited) shape highlights the topics it is a
+  place of without a click: a ring around their markers, their places outlined, their cards
+  outlined. The pane reads one point larger than the app's chrome. **File context**
+  (`crates/agent/src/file_context.rs`): the deck as a whole, not tied to a place (what it is, for
+  whom, house rules, background, facts gathered), kept in the file and when it is sent;
+  `get_file_context`, `add_file_context {title, kind, text}` → id, `update_file_context`,
+  `remove_file_context`; `get_context` and every question carry a short summary (masked). The
+  **File context** button beside the pane's tabs shows the entries with who added each and when;
+  the person adds, edits and removes them, undoably. **Hovering a link** in the pane (in answers,
+  notes, status text, file context, and a topic's places) highlights its target on the slide
+  without moving the focus or the selection: the shape or the slide outlined, a `topic:`/`place:`
+  link's places; a target on another slide shows as a hint at the slide's edge ("slide 5 below");
+  a removed place shows where it was and outlines the shape it came after.
 - **Links inside text are anchors.** `[slide 4](slide:4)`, `shape:`, `place:`, `topic:`, `note:`
   and a plain "slide 4" are stored as `anchor:<id>` (or topic and place ids) when an answer, note,
   status text or question is stored, and shown with the current address: insert a slide before it

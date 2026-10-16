@@ -33,6 +33,8 @@ enum Act {
     Ask(&'static str, Json),
     Open(String),
     Send,
+    /// The pointer is over a link: highlight its target.
+    Hover(String),
     /// Retry (true) or Dismiss a spoken question.
     Voice(bool, String),
 }
@@ -51,12 +53,17 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui) {
             st.highlight_place = None;
         }
     }
+    st.hover_link = None;
     egui::Panel::right("agent_pane")
         .resizable(true)
         .default_size(340.0)
         .size_range(280.0..=560.0)
         .frame(egui::Frame::NONE.fill(t.card).inner_margin(egui::Margin::same(10)))
         .show(ui, |ui| {
+            // The pane reads one point larger than the app's chrome.
+            for f in ui.style_mut().text_styles.values_mut() {
+                f.size += 1.0;
+            }
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Agent").font(theme::bold(16.0)));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -71,12 +78,26 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui) {
             ui.horizontal_wrapped(|ui| {
                 let overview = if unread > 0 { format!("Overview ({unread} new)") } else { "Overview".to_string() };
                 for (tab, name) in [(Tab::Selection, "Selection".to_string()), (Tab::Overview, overview), (Tab::History, "History".into())] {
-                    if ui.selectable_label(st.tab == tab, name).clicked() {
+                    if ui.selectable_label(st.tab == tab && !st.file_context, name).clicked() {
                         st.tab = tab;
+                        st.file_context = false;
                     }
+                }
+                let n = l.file_context.len();
+                let label = if n > 0 { format!("File context ({n})") } else { "File context".to_string() };
+                if ui
+                    .selectable_label(st.file_context, if st.file_context { RichText::new(label) } else { RichText::new(label).color(p.agent) })
+                    .on_hover_text("The deck as a whole: what it is, for whom, house rules, background")
+                    .clicked()
+                {
+                    st.file_context = !st.file_context;
                 }
             });
             ui.separator();
+            if st.file_context {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| file_context_view(st, app, ui, &l, &t, &p, &mut acts));
+                return;
+            }
             match st.tab {
                 Tab::Selection => {
                     egui::Panel::bottom("agent_ask")
@@ -115,6 +136,7 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui) {
             }
             Act::Open(tid) => open_topic(st, app, &tid, None),
             Act::Send => send_copy(st, app),
+            Act::Hover(h) => st.hover_link = Some(h),
             #[cfg(not(target_arch = "wasm32"))]
             Act::Voice(retry, id) => {
                 if retry {
@@ -178,7 +200,11 @@ fn rich(ui: &mut Ui, d: &DocState, l: &Layer, nums: &Numbers, text: &str, color:
                             .map(|n| textlinks::plain(d, l, nums, &n.summary))
                             .filter(|x| !x.is_empty())
                             .unwrap_or_else(|| h.clone());
-                        if ui.link(rt).on_hover_text(tip).clicked() {
+                        let r = ui.link(rt).on_hover_text(tip);
+                        if r.hovered() {
+                            acts.push(Act::Hover(h.clone()));
+                        }
+                        if r.clicked() {
                             acts.push(Act::Follow(h));
                         }
                     }
@@ -269,7 +295,9 @@ fn topic_card(st: &mut AgentUi, ui: &mut Ui, d: &DocState, l: &Layer, nums: &Num
     let color = status_color(p, tp.status);
     let time = ui.input(|i| i.time);
     let working = topics::working(l, tp);
-    card(ui, t, color, |ui| {
+    // The selected shape is a place of this topic: the card is outlined too.
+    let lit = crate::overlay::selected_topics(d, l).contains(&tp.id);
+    let rect = card(ui, t, color, |ui| {
         // Number and status.
         ui.horizontal_wrapped(|ui| {
             inline_marker(ui, &nums.topic(&tp.id).to_string(), marker_color(p, l, tp, time), topics::unread(l, tp) > 0, 18.0);
@@ -348,14 +376,24 @@ fn topic_card(st: &mut AgentUi, ui: &mut Ui, d: &DocState, l: &Layer, nums: &Num
             ui.horizontal_wrapped(|ui| {
                 inline_marker(ui, &nums.place(&pl.id), if found.is_empty() { p.info } else { color }, false, 14.0);
                 if found.is_empty() {
-                    ui.label(RichText::new(label).small().strikethrough().color(t.text_dim))
+                    let r = ui
+                        .label(RichText::new(label).small().strikethrough().color(t.text_dim))
                         .on_hover_text("The content was deleted: undo the delete to bring it back");
+                    if r.hovered()
+                        && let Some(a) = pl.anchors.first()
+                    {
+                        acts.push(Act::Hover(format!("was:{a}")));
+                    }
                 } else {
                     let mut rt = RichText::new(label).small().color(link_color(ui));
                     if lit {
                         rt = rt.background_color(t.selected);
                     }
-                    if ui.link(rt).clicked()
+                    let r = ui.link(rt);
+                    if r.hovered() {
+                        acts.push(Act::Hover(format!("place:{}", nums.place(&pl.id))));
+                    }
+                    if r.clicked()
                         && let Some((_, w)) = found.first()
                     {
                         acts.push(Act::Go(w.clone()));
@@ -435,6 +473,9 @@ fn topic_card(st: &mut AgentUi, ui: &mut Ui, d: &DocState, l: &Layer, nums: &Num
             }
         }
     });
+    if lit {
+        ui.painter().rect_stroke(rect, 6.0, egui::Stroke::new(1.5, color), egui::StrokeKind::Inside);
+    }
 }
 
 /// The option of a topic's proposal shown (the first unless the person picked another).
@@ -878,6 +919,85 @@ fn overview_tab(st: &mut AgentUi, app: &SlideApp, ui: &mut Ui, l: &Layer, t: &To
     ui.checkbox(&mut st.send_discussion, "Include the discussion");
     if ui.button("Save a Copy to Send…").clicked() {
         acts.push(Act::Send);
+    }
+}
+
+// ---------------------------------------------------------------- File context
+
+fn file_context_view(st: &mut AgentUi, app: &SlideApp, ui: &mut Ui, l: &Layer, t: &Tokens, p: &Palette, acts: &mut Vec<Act>) {
+    let Some(d) = app.session.active() else { return };
+    let nums = topics::numbers_of(d, l);
+    ui.label(RichText::new("File context").font(theme::bold(14.0)).color(t.text));
+    ui.label(
+        RichText::new("The deck as a whole: what it is, for whom, house rules, background, facts gathered. The agent reads it with every question; it stays in the file when you send it.")
+            .small()
+            .color(t.text_faint),
+    );
+    ui.add_space(6.0);
+    for e in &l.file_context {
+        let editing = st.fc_edit.as_ref().is_some_and(|x| x.0 == e.id);
+        if editing {
+            continue;
+        }
+        card(ui, t, p.agent, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(&e.kind).small().strong().color(p.agent));
+                ui.label(RichText::new(format!("{} · {}", by(e.by), ago(e.at))).small().color(t.text_faint));
+            });
+            ui.label(RichText::new(&e.title).strong().color(t.text));
+            rich(ui, d, l, &nums, &e.text, t.text, false, acts);
+            ui.horizontal(|ui| {
+                if ui.small_button("Edit").clicked() {
+                    st.fc_edit = Some((e.id.clone(), e.title.clone(), e.kind.clone(), textlinks::plain(d, l, &nums, &e.text)));
+                }
+                if ui.small_button("Remove").on_hover_text("Undoable").clicked() {
+                    acts.push(Act::Run("agent.removeFileContext", json!({"id": e.id})));
+                }
+            });
+        });
+    }
+    let mut done = false;
+    match st.fc_edit.as_mut() {
+        Some((id, title, kind, text)) => {
+            card(ui, t, p.agent, |ui| {
+                ui.add(egui::TextEdit::singleline(title).desired_width(f32::INFINITY).hint_text("Title"));
+                egui::ComboBox::from_id_salt("agent_fc_kind").selected_text(kind.clone()).show_ui(ui, |ui| {
+                    for k in deckcraft_agent::file_context::KINDS {
+                        ui.selectable_value(kind, k.to_string(), *k);
+                    }
+                });
+                ui.add(
+                    egui::TextEdit::multiline(text)
+                        .desired_rows(3)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("What the agent should keep in mind (slide 4 becomes a link)"),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Save").clicked() && !title.trim().is_empty() && !text.trim().is_empty() {
+                        if id.is_empty() {
+                            acts.push(Act::Run("agent.addFileContext", json!({"title": title.trim(), "kind": kind, "text": text.trim()})));
+                        } else {
+                            acts.push(Act::Run(
+                                "agent.updateFileContext",
+                                json!({"id": id, "title": title.trim(), "kind": kind, "text": text.trim()}),
+                            ));
+                        }
+                        done = true;
+                    }
+                    if ui.small_button("Cancel").clicked() {
+                        done = true;
+                    }
+                });
+            });
+        }
+        None => {
+            if ui.button("Add to File Context").clicked() {
+                st.fc_edit = Some((String::new(), String::new(), "background".into(), String::new()));
+            }
+        }
+    }
+    if done {
+        st.fc_edit = None;
     }
 }
 

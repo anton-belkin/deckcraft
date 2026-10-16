@@ -33,6 +33,10 @@ macro_rules! spec {
 pub static SPECS: &[CommandSpec] = &[
     // the presenter's side
     spec!(change "agent.ask", "Ask the Agent", "{text, slide?, shape?, words?, cell?, topic?, new?: bool, refs?: [{n, slide, shape?}] (what ⟦n⟧ in the text points at), spoken?: bool, transcribing?: bool (spoken, text still coming: not with the agent until agent.spoken)} (default: the selection) — joins the topic the place has, or starts one → {id, topic}", has_slide, crate::topic_cmds::ask),
+    spec!(query "agent.fileContext", "File Context", "{} → the file's own context: entries {id, title, kind, text, by, at}", has_doc, crate::file_context::list),
+    spec!(change "agent.addFileContext", "Add File Context", "{title, kind?: about|audience|rules|background|fact, text} → id", has_doc, crate::file_context::add),
+    spec!(change "agent.updateFileContext", "Edit File Context", "{id, title?, text?, kind?}", has_doc, crate::file_context::update),
+    spec!(change "agent.removeFileContext", "Remove File Context", "{id}", has_doc, crate::file_context::remove),
     spec!(change "agent.applyProposal", "Apply Proposal", "{topic, option?} — the person applies an option of the agent's proposal: one undo step, a decision note", has_doc, crate::proposals::apply),
     spec!(change "agent.rejectProposal", "Reject Proposal", "{topic, comment?} — the comment goes to the agent as a follow-up in the topic", has_doc, crate::proposals::reject),
     spec!(change "agent.describeOption", "Describe Option", "{topic, option, title, why} — the agent names an option of its proposal", has_doc, crate::proposals::describe),
@@ -358,6 +362,10 @@ pub fn question_json(s: &Session, l: &Layer, m: &Masker, q: &Question) -> Json {
         if !near.is_empty() {
             o["pendingNearby"] = json!(near);
         }
+        let fc = crate::file_context::summary(l);
+        if !fc.is_empty() {
+            o["fileContext"] = json!(m.text(&fc));
+        }
         if !q.refs.is_empty() {
             // What the person pointed at while speaking: in the text where they pointed, and listed.
             let refs: Vec<Json> = q.refs.iter().map(|r| ref_json(d, l, r)).collect();
@@ -618,6 +626,7 @@ fn context(s: &mut Session, p: &Json) -> Result<Json> {
         "slideSize": [d.doc.slide_size.width, d.doc.slide_size.height],
         "slides": slides,
         "clientData": private,
+        "fileContext": m.text(&crate::file_context::summary(&l)),
         "privacyNote": "Text marked as client data shows as pseudonyms like [client-3] wherever it appears in the deck; the same text always gets the same pseudonym. Never present a pseudonym as a real name or number, never guess what it stands for, and don't change shapes marked private (your changes there are refused).",
         "openQuestions": l.asked().filter(|q| q.status != QuestionStatus::Answered).count(),
         "notes": l.notes.len(),

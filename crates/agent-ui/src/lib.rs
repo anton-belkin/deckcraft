@@ -131,6 +131,12 @@ pub(crate) struct AgentUi {
     pub options: std::collections::HashMap<String, String>,
     /// A reject being written: topic, comment.
     pub reject_edit: Option<(String, String)>,
+    /// The File context view is open (instead of a tab), and an entry being written: id (empty
+    /// for a new one), title, kind, text.
+    pub file_context: bool,
+    pub fc_edit: Option<(String, String, String, String)>,
+    /// The link under the pointer in the pane: its target is highlighted on the slide.
+    pub hover_link: Option<String>,
     /// Presenter View shows the topic markers (the presenter turns them on).
     pub presenter_markers: bool,
     #[cfg(not(target_arch = "wasm32"))]

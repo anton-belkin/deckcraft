@@ -69,6 +69,11 @@ pub enum Op {
         after: Option<crate::proposals::Proposal>,
         note: Option<String>,
     },
+    /// The file's context edited by the person: the entries before and after.
+    FileContext {
+        before: Vec<crate::file_context::Entry>,
+        after: Vec<crate::file_context::Entry>,
+    },
     /// What the agent knows for the document (mode, web, folder).
     Context {
         before: Option<crate::context::Context>,
@@ -91,6 +96,7 @@ impl Op {
             Op::AddNote { .. } => "Add Note",
             Op::Reject { .. } => "Reject Place",
             Op::Context { .. } => "Agent Context",
+            Op::FileContext { .. } => "File Context",
             Op::Draft { note: Some(_), .. } => "Apply Proposal",
             Op::Draft { .. } => "Reject Proposal",
         }
@@ -136,6 +142,7 @@ impl Op {
             Op::AddNote { note } => removed(l, note, true),
             Op::Reject { place } => Op::places(l, std::slice::from_ref(place), false),
             Op::Context { before, .. } => l.context = before.clone(),
+            Op::FileContext { before, .. } => l.file_context = before.clone(),
             Op::Draft { topic, before, note, .. } => {
                 set_draft(l, topic, before);
                 if let Some(n) = note {
@@ -171,6 +178,7 @@ impl Op {
             Op::AddNote { note } => removed(l, note, false),
             Op::Reject { place } => Op::places(l, std::slice::from_ref(place), true),
             Op::Context { after, .. } => l.context = after.clone(),
+            Op::FileContext { after, .. } => l.file_context = after.clone(),
             Op::Draft { topic, after, note, .. } => {
                 set_draft(l, topic, after);
                 if let Some(n) = note {

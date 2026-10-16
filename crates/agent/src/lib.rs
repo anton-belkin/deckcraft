@@ -27,6 +27,7 @@ pub mod context;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cowork;
 pub mod documents;
+pub mod file_context;
 pub mod layer;
 pub mod links;
 pub mod listener;

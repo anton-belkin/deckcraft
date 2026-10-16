@@ -20,7 +20,7 @@ decisions (log_decision). Change the deck only with run_command, giving a reason
 from spreadsheet cells: list_links shows their source and whether the numbers there changed since they were pasted. PRIVACY: \
 text the user marked as client data shows as pseudonyms like [client-3] wherever it appears; the same text always gets the \
 same pseudonym. Never present a pseudonym as real, never guess what it stands for, and never write it into the deck as if it \
-were a name. You cannot change shapes holding client data. A question with kind \"ping\" is a connection check: answer it at once with \"here\", don't investigate. Questions belong to topics (list_topics, get_topic): link inside the text ([slide 4](slide:4), [3.2](place:3.2)); add places that a change here affects (add_places); leave notes that will still matter after the chat (add_note with the topic); never mark Agreed, propose it (propose_agreed). PROPOSALS: in a topic, propose changes with run_command {topic} (they run on the topic's draft; the person applies them in the document); don't ask for confirmation in the chat; offer options (option B, describe_option) when there's a real choice. Shapes a pending proposal touches carry `pending`, questions carry `pendingNearby`: take them into account. VOICE: ⟦n⟧ in a question is what the user pointed at while speaking (expanded as ⟦n: slide 2 › TextBox 3 “Revenue grew 6%”⟧), see refs; resolve \"this\", \"that one\", \"это\" from those and the context.";
+were a name. You cannot change shapes holding client data. A question with kind \"ping\" is a connection check: answer it at once with \"here\", don't investigate. Questions belong to topics (list_topics, get_topic): link inside the text ([slide 4](slide:4), [3.2](place:3.2)); add places that a change here affects (add_places); leave notes that will still matter after the chat (add_note with the topic); never mark Agreed, propose it (propose_agreed). FILE CONTEXT: get_context and every question carry a summary of the file's own context (get_file_context for all of it); add what will matter for the whole deck with add_file_context. PROPOSALS: in a topic, propose changes with run_command {topic} (they run on the topic's draft; the person applies them in the document); don't ask for confirmation in the chat; offer options (option B, describe_option) when there's a real choice. Shapes a pending proposal touches carry `pending`, questions carry `pendingNearby`: take them into account. VOICE: ⟦n⟧ in a question is what the user pointed at while speaking (expanded as ⟦n: slide 2 › TextBox 3 “Revenue grew 6%”⟧), see refs; resolve \"this\", \"that one\", \"это\" from those and the context.";
 
 fn tool(name: &str, desc: &str, props: Value, required: &[&str], read_only: bool) -> Value {
     json!({
@@ -177,6 +177,28 @@ fn base_tools() -> Vec<Value> {
             false,
         ),
         tool(
+            "get_file_context",
+            "The file's own context, not tied to a place: what the deck is, for whom, house rules, background, facts gathered. Kept in the file and when it is sent.",
+            json!({}),
+            &[],
+            true,
+        ),
+        tool(
+            "add_file_context",
+            "Add to the file's own context (what will still matter for the whole deck). kind: about, audience, rules, background or fact.",
+            json!({"title": s("A few words"), "kind": s("about | audience | rules | background | fact"), "text": s("The entry, with links")}),
+            &["title", "text"],
+            false,
+        ),
+        tool(
+            "update_file_context",
+            "Edit an entry of the file's context.",
+            json!({"id": s("Entry id"), "title": s("New title"), "text": s("New text")}),
+            &["id"],
+            false,
+        ),
+        tool("remove_file_context", "Remove an entry of the file's context.", json!({"id": s("Entry id")}), &["id"], false),
+        tool(
             "describe_option",
             "Name an option of your proposal in a topic: a short title and why (with links). Offer options only when there's a real choice.",
             json!({"topic": json!({"type": ["integer", "string"]}), "option": s("A, B, C…"), "title": s("A few words"), "why": s("Why this option, with links")}),
@@ -291,6 +313,10 @@ pub fn call(b: &mut dyn Backend, name: &str, args: &Value) -> Result<Value, Stri
         "log_decision" => exec(b, &scope, "agent.decision", pick(args, &["text", "source", "slide", "shape", "words"])),
         "get_layer" => exec(b, &scope, "agent.layer", json!({})),
         "run_command" => exec(b, &scope, "agent.exec", pick(args, &["command", "params", "reason", "source", "topic", "option", "slide"])),
+        "get_file_context" => exec(b, &scope, "agent.fileContext", json!({})),
+        "add_file_context" => exec(b, &scope, "agent.addFileContext", pick(args, &["title", "kind", "text"])),
+        "update_file_context" => exec(b, &scope, "agent.updateFileContext", pick(args, &["id", "title", "text"])),
+        "remove_file_context" => exec(b, &scope, "agent.removeFileContext", pick(args, &["id"])),
         "describe_option" => exec(b, &scope, "agent.describeOption", pick(args, &["topic", "option", "title", "why"])),
         "discard_proposal" => exec(b, &scope, "agent.discardProposal", pick(args, &["topic", "option"])),
         "list_commands" => {
