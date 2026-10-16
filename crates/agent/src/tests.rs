@@ -1302,3 +1302,51 @@ fn web_lets_the_background_client_search_and_fetch() {
     let ctx = crate::context::Context { kind: crate::context::Kind::Cowork, web: true, ..Default::default() };
     assert!(!ctx.web());
 }
+
+// ---------------------------------------------------------------- voice questions
+
+#[test]
+fn a_spoken_question_waits_for_its_text_and_its_pointing_becomes_places() {
+    let (mut s, client, numbers) = deck();
+    // Asked on the numbers, the client line pointed at while speaking.
+    let q = run(
+        &mut s,
+        "agent.ask",
+        json!({"slide": 2, "shape": numbers.0, "transcribing": true, "refs": [{"n": 1, "slide": 2, "shape": client.0}, {"n": 2, "slide": 3}]}),
+    );
+    let id = q["id"].as_str().unwrap().to_string();
+    let tid = q["topicId"].as_str().unwrap().to_string();
+    // Not the agent's yet, and never in the file.
+    assert!(run(&mut s, "agent.questions", json!({"status": "pending", "actor": "agent"})).as_array().unwrap().is_empty());
+    let l = crate::active_layer(&s).unwrap();
+    let mut doc = (*s.doc().unwrap().doc).clone();
+    layer::write_into(&mut doc, &l);
+    assert!(layer::read_from(&doc).questions.is_empty());
+    // One place per thing pointed at, besides the main one.
+    let t = l.topic(&tid).unwrap();
+    assert_eq!(t.places.len(), 3, "{:?}", t.places);
+    assert_eq!(t.places.iter().filter(|p| p.reason == "pointed at while asking").count(), 2);
+    // The text arrives: the agent reads where each marker points (the client line is client data).
+    run(&mut s, "agent.private", json!({"slide": 2, "shape": client.0}));
+    run(&mut s, "agent.spoken", json!({"id": id, "text": "Is this ⟦1⟧ client the one on ⟦2⟧?"}));
+    let list = run(&mut s, "agent.questions", json!({"status": "pending", "actor": "agent"}));
+    let q = &list[0];
+    let text = q["text"].as_str().unwrap();
+    assert!(text.contains("⟦1: slide 2 › "), "{text}");
+    assert!(text.contains("⟦2: slide 3⟧"), "{text}");
+    // Client data stays masked in what the agent reads.
+    assert!(!text.contains("Acme"), "{text}");
+    assert_eq!(q["refs"][1]["slide"], 3);
+    assert_eq!(q["spoken"], true);
+    // A failed one can be dismissed; its topic goes with it.
+    let q2 = run(&mut s, "agent.ask", json!({"slide": 3, "transcribing": true, "new": true}));
+    let id2 = q2["id"].as_str().unwrap().to_string();
+    run(&mut s, "agent.spoken", json!({"id": id2, "error": "Nothing was heard"}));
+    assert!(s.execute("agent.claim", &json!({"id": id2, "actor": "agent"})).is_err());
+    run(&mut s, "agent.removeQuestion", json!({"id": id2}));
+    let l = crate::active_layer(&s).unwrap();
+    assert!(l.questions.iter().all(|q| q.id != id2));
+    assert!(l.topic(q2["topicId"].as_str().unwrap()).unwrap().hidden);
+    // A question with the agent can't be dismissed that way.
+    assert!(s.execute("agent.removeQuestion", &json!({"id": id})).is_err());
+}

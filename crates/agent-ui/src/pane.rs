@@ -32,6 +32,8 @@ enum Act {
     Ask(&'static str, Json),
     Open(String),
     Send,
+    /// Retry (true) or Dismiss a spoken question.
+    Voice(bool, String),
 }
 
 pub(crate) fn show(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui) {
@@ -110,6 +112,17 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui) {
             }
             Act::Open(tid) => open_topic(st, app, &tid, None),
             Act::Send => send_copy(st, app),
+            #[cfg(not(target_arch = "wasm32"))]
+            Act::Voice(retry, id) => {
+                if retry {
+                    let ctx = ui.ctx().clone();
+                    st.voice.retry(app, &ctx, &id);
+                } else {
+                    st.voice.dismiss(app, &id);
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            Act::Voice(..) => {}
         }
     }
 }
@@ -234,6 +247,15 @@ fn by(a: Actor) -> &'static str {
         Actor::App => "by DeckCraft",
         _ => "by you",
     }
+}
+
+/// A question's text with what was pointed at while speaking (`⟦n⟧`) as links: `(1)`.
+fn with_refs(q: &layer::Question) -> String {
+    let mut t = q.text.clone();
+    for r in &q.refs {
+        t = t.replace(&format!("⟦{}⟧", r.n), &format!("[({})](anchor:{})", r.n, r.anchor));
+    }
+    t
 }
 
 // ---------------------------------------------------------------- a topic
@@ -363,19 +385,34 @@ fn topic_card(st: &mut AgentUi, ui: &mut Ui, d: &DocState, l: &Layer, nums: &Num
                     for q in &qs {
                         ui.add_space(2.0);
                         ui.horizontal_wrapped(|ui| {
-                            ui.label(RichText::new(if q.kind == "voice" { "You said" } else { "You asked" }).small().strong().color(p.person));
+                            ui.label(RichText::new(if q.spoken { "You said" } else { "You asked" }).small().strong().color(p.person));
                             ui.label(RichText::new(ago(q.asked_at)).small().color(t.text_faint));
                             let (s, c) = match q.status {
                                 QuestionStatus::Pending => ("waiting for the agent", p.pending),
                                 QuestionStatus::Working => ("the agent is working on it", p.working),
                                 QuestionStatus::Withdrawn => ("withdrawn", t.text_faint),
                                 QuestionStatus::Answered => ("", t.text_faint),
+                                QuestionStatus::Transcribing => ("transcribing what you said…", p.working),
+                                QuestionStatus::Failed => ("not transcribed", p.broken),
                             };
                             if !s.is_empty() {
                                 ui.label(RichText::new(s).small().color(c));
                             }
                         });
-                        rich(ui, d, l, nums, &q.text, t.text, false, acts);
+                        rich(ui, d, l, nums, &with_refs(q), t.text, false, acts);
+                        if q.status == QuestionStatus::Failed {
+                            if !q.error.is_empty() {
+                                ui.label(RichText::new(&q.error).small().color(t.text_dim));
+                            }
+                            ui.horizontal(|ui| {
+                                if ui.small_button("Retry").on_hover_text("Transcribe the recording again").clicked() {
+                                    acts.push(Act::Voice(true, q.id.clone()));
+                                }
+                                if ui.small_button("Dismiss").on_hover_text("Drop this question and its recording").clicked() {
+                                    acts.push(Act::Voice(false, q.id.clone()));
+                                }
+                            });
+                        }
                         if let Some(a) = &q.answer {
                             ui.add_space(2.0);
                             ui.label(RichText::new("Agent").small().strong().color(p.agent));

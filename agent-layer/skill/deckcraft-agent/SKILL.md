@@ -75,6 +75,8 @@ withdrawn by the user; drop it". Drop it.
 
 ## For each question
 
+⟦n⟧ in a question is what the user pointed at while speaking (a shape or a slide), see `refs`.
+
 1. `claim_question` at once: the place's marker turns blue, so the user sees you are on it.
 2. Investigate: `get_context` (once per session), `read_slides` for the slide (`where.slide`) and
    the slides around it, `list_links` with `check: true` when the question is about a number in a

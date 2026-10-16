@@ -20,7 +20,7 @@ decisions (log_decision). Change the deck only with run_command, giving a reason
 from spreadsheet cells: list_links shows their source and whether the numbers there changed since they were pasted. PRIVACY: \
 text the user marked as client data shows as pseudonyms like [client-3] wherever it appears; the same text always gets the \
 same pseudonym. Never present a pseudonym as real, never guess what it stands for, and never write it into the deck as if it \
-were a name. You cannot change shapes holding client data. A question with kind \"ping\" is a connection check: answer it at once with \"here\", don't investigate. Questions belong to topics (list_topics, get_topic): link inside the text ([slide 4](slide:4), [3.2](place:3.2)); add places that a change here affects (add_places); leave notes that will still matter after the chat (add_note with the topic); never mark Agreed, propose it (propose_agreed).";
+were a name. You cannot change shapes holding client data. A question with kind \"ping\" is a connection check: answer it at once with \"here\", don't investigate. Questions belong to topics (list_topics, get_topic): link inside the text ([slide 4](slide:4), [3.2](place:3.2)); add places that a change here affects (add_places); leave notes that will still matter after the chat (add_note with the topic); never mark Agreed, propose it (propose_agreed). VOICE: ⟦n⟧ in a question is what the user pointed at while speaking (expanded as ⟦n: slide 2 › TextBox 3 “Revenue grew 6%”⟧), see refs; resolve \"this\", \"that one\", \"это\" from those and the context.";
 
 fn tool(name: &str, desc: &str, props: Value, required: &[&str], read_only: bool) -> Value {
     json!({
@@ -101,7 +101,7 @@ fn base_tools() -> Vec<Value> {
         ),
         tool(
             "list_questions",
-            "Questions the user asked on the deck. status: pending (new), working (claimed), answered, open (pending+working) or all.",
+            "Questions the user asked on the deck. status: pending (new), working (claimed), answered, open (pending+working) or all. A spoken question carries ⟦n: slide 2 › TextBox 3 “…”⟧ where the user pointed at a shape or slide while speaking; refs lists them.",
             json!({"status": {"type": "string", "enum": ["pending", "working", "answered", "open", "all"]}}),
             &[],
             true,

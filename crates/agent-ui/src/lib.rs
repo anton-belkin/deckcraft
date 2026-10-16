@@ -19,6 +19,8 @@ mod context;
 mod overlay;
 mod pane;
 mod ribbon;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod voice;
 
 use std::collections::HashSet;
 use std::sync::OnceLock;
@@ -38,7 +40,15 @@ static SERVER: OnceLock<String> = OnceLock::new();
 /// Registers the agent UI (call once, on the UI thread, before the first frame).
 pub fn install() {
     deckcraft_agent::install();
-    deckcraft_ui_egui::ext::register(Box::new(AgentUi::default()));
+    #[cfg(not(target_arch = "wasm32"))]
+    deckcraft_engine::ext::register_commands(voice::SPECS);
+    // Once per UI thread: a second registration would run every hook twice.
+    thread_local! {
+        static DONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    if !DONE.with(|d| d.replace(true)) {
+        deckcraft_ui_egui::ext::register(Box::new(AgentUi::default()));
+    }
 }
 
 pub use ribbon::set_stdio_entry;
@@ -119,6 +129,8 @@ pub(crate) struct AgentUi {
     pub send_discussion: bool,
     /// Presenter View shows the topic markers (the presenter turns them on).
     pub presenter_markers: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub voice: voice::Voice,
     /// The document Presenter View shows (it only gets the presentation).
     pub presenter_uid: Option<u64>,
     pub checker: checker::Checker,
@@ -393,6 +405,15 @@ impl UiExtension for AgentUi {
             let _ = layer::get(d);
         }
         ribbon::keytip(self, app, ctx);
+        // Voice questions: hold ⌥, speak, point; the release isn't a keytip.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.voice.frame(app, ctx);
+            if self.voice.key_used {
+                self.ribbon.disarm();
+            }
+            voice::indicator(&self.voice, app, ctx);
+        }
         // The app's way of reaching the agent follows the active document's context.
         deckcraft_agent::context::apply(&app.session);
         // The background agent (in that mode): started with the first question, fed each new one.
@@ -439,6 +460,8 @@ impl UiExtension for AgentUi {
 
     fn paint_slide(&mut self, app: &mut SlideApp, ui: &mut Ui, painter: &egui::Painter, geo: &SlideGeometry) {
         overlay::paint(self, app, ui, painter, geo);
+        #[cfg(not(target_arch = "wasm32"))]
+        voice::bubbles(&self.voice, app, painter, geo);
     }
 
     fn context_menu(&mut self, app: &mut SlideApp, ui: &mut Ui) -> bool {

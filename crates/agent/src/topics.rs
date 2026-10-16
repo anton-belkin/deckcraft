@@ -201,7 +201,7 @@ pub fn unread(l: &Layer, t: &Topic) -> usize {
 
 /// The agent is working on a question of the topic.
 pub fn working(l: &Layer, t: &Topic) -> bool {
-    l.questions.iter().any(|q| q.topic == t.id && !q.hidden && q.status == QuestionStatus::Working)
+    l.questions.iter().any(|q| q.topic == t.id && !q.hidden && matches!(q.status, QuestionStatus::Working | QuestionStatus::Transcribing))
 }
 
 /// "Agreed 10 of 15 · 2 revise · 3 open".

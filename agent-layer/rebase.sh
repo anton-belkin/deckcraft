@@ -24,11 +24,17 @@ if ! $check_only; then
   echo "Rebasing $(git rev-parse --abbrev-ref HEAD) onto upstream/$branch…"
   # Cargo.lock conflicts on nearly every rebase (upstream bumps dependencies): take upstream's lock
   # and let cargo add our two crates to it, without updating anything else.
-  resolve_lock() {
+  # craft-voice needs candle, and every candle needs a `zip` that crates.io has yanked; cargo takes a
+# yanked version only when Cargo.lock already names it, so upstream's lock gets that entry back.
+seed_yanked() {
+  grep -q '^version = "8.6.0"' <(grep -A1 '^name = "zip"$' Cargo.lock) || printf '\n[[package]]\nname = "zip"\nversion = "8.6.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "2d04a6b5381502aa6087c94c669499eb1602eb9c5e8198e534de571f7154809b"\n' >>Cargo.lock
+}
+resolve_lock() {
     local files
     files=$(git diff --name-only --diff-filter=U)
     [ "$files" = "Cargo.lock" ] || return 1
     git checkout --ours Cargo.lock   # during a rebase, "ours" is upstream
+    seed_yanked
     cargo metadata --format-version 1 >/dev/null
     git add Cargo.lock
     GIT_EDITOR=true git rebase --continue || true   # a later commit may stop again: the loop sees it

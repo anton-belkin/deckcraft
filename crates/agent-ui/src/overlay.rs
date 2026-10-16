@@ -27,6 +27,11 @@ fn shape_box(app: &SlideApp, id: ShapeId) -> Option<Xfrm> {
     Some(deckcraft_engine::cmd::xfrm_of(&d.doc, &d.selection, top))
 }
 
+/// A shape's box on screen (the edited slide).
+pub(crate) fn shape_rect(app: &SlideApp, geo: &SlideGeometry, id: ShapeId) -> Option<Rect> {
+    shape_box(app, id).map(|x| screen(geo, &x))
+}
+
 fn screen(geo: &SlideGeometry, x: &Xfrm) -> Rect {
     Rect::from_two_pos(geo.to_screen(Point::new(x.x, x.y)), geo.to_screen(Point::new(x.x + x.w, x.y + x.h)))
 }

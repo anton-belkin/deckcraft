@@ -90,6 +90,24 @@ pub enum QuestionStatus {
     Answered,
     /// The person took it back (undo) while the agent worked on it.
     Withdrawn,
+    /// Spoken, being transcribed: not with the agent yet (kept in memory only, never saved).
+    Transcribing,
+    /// The transcription failed: the person can retry or dismiss it (memory only).
+    Failed,
+}
+
+impl QuestionStatus {
+    /// Not a question for the agent yet: a spoken one still turning into text.
+    pub fn is_draft(self) -> bool {
+        matches!(self, QuestionStatus::Transcribing | QuestionStatus::Failed)
+    }
+}
+
+/// What the person pointed at while speaking: marker `⟦n⟧` in the question's text.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct QuestionRef {
+    pub n: u32,
+    pub anchor: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -116,6 +134,15 @@ pub struct Question {
     /// The presenter has opened the answer.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub seen: bool,
+    /// Shapes or slides pointed at while the question was spoken (`anchor` stays the main one).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refs: Vec<QuestionRef>,
+    /// Asked by voice.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub spoken: bool,
+    /// Why the transcription failed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub error: String,
     /// `ping` for a connection check (never shown, never saved); empty for a person's question.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub kind: String,
@@ -369,7 +396,7 @@ impl Layer {
             scan(&t.proposal);
         }
         let used = |id: &str| {
-            self.questions.iter().any(|q| q.anchor == id)
+            self.questions.iter().any(|q| q.anchor == id || q.refs.iter().any(|r| r.anchor == id))
                 || self.notes.iter().any(|n| n.anchor == id)
                 || self.topics.iter().any(|t| t.places.iter().any(|p| p.anchors.iter().any(|a| a == id)))
                 || self.private.iter().any(|p| p == id)
@@ -533,7 +560,8 @@ pub fn write_into(doc: &mut Presentation, layer: &Layer) {
     // Connection checks never go into the file.
     let mut layer = layer.clone();
     layer.version = VERSION;
-    layer.questions.retain(|q| !q.is_ping());
+    // Spoken questions still being transcribed live in memory only.
+    layer.questions.retain(|q| !q.is_ping() && !q.status.is_draft());
     if layer.is_empty() && layer.agent_session.is_empty() {
         return;
     }

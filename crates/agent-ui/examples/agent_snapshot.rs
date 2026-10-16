@@ -6,7 +6,7 @@
 //!
 //! `cargo run -p deckcraft-agent-ui --example agent_snapshot -- [--pane selection|overview|history|topic:N]
 //!  [--slide N] [--hover-link] [--presenter] [--agent-tab] [--collapsed]
-//!  [--context none|web|cowork|code|folder] [--status listening|checking] [--logged-in] [--menu steps|modes] [--size 1440x900] [--dark] out.png`
+//!  [--voice off|idle|record|download] [--context none|web|cowork|code|folder] [--status listening|checking] [--logged-in] [--menu steps|modes] [--size 1440x900] [--dark] out.png`
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use deckcraft_agent::links;
@@ -183,6 +183,7 @@ fn main() {
     let (mut pane, mut slide, mut hover, mut dark, mut presenter, mut agent_tab, mut collapsed) = (None, 2usize, false, false, false, false, false);
     let (mut status, mut context, mut menu, mut logged_in): (Option<String>, Option<String>, Option<String>, bool) = (None, None, None, false);
     let mut size = (1440.0f32, 900.0f32);
+    let mut voice: Option<String> = None;
     let mut out = "agent.png".to_string();
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
@@ -197,6 +198,7 @@ fn main() {
             "--context" => context = it.next(),
             "--menu" => menu = it.next(),
             "--logged-in" => logged_in = true,
+            "--voice" => voice = it.next(),
             "--dark" => dark = true,
             "--size" => {
                 if let Some((w, h)) = it.next().as_deref().and_then(|s| s.split_once('x').map(|(w, h)| (w.to_string(), h.to_string()))) {
@@ -247,6 +249,29 @@ fn main() {
             deckcraft_agent::listener::attach(uid, "Cowork · Acme board");
         }
         _ => {}
+    }
+    // Voice questions: a model chosen (an app setting kept in a scratch file here), a recording
+    // with the table and the growth line pointed at, or a download under way.
+    if let Some(v) = voice.as_deref() {
+        let growth_id = session.doc().unwrap().doc.slides[1]
+            .shapes
+            .iter()
+            .find(|x| x.text.as_ref().is_some_and(|t| t.text().starts_with("Revenue grew")))
+            .map(|x| x.id.0)
+            .unwrap_or(0);
+        deckcraft_agent_ui::voice::set_settings_path(Some(std::env::temp_dir().join("deckcraft-agent-demo/voice.json")));
+        let _ = session.execute("agent.voiceModel", &json!({"model": if v == "off" { "off" } else { "small" }}));
+        match v {
+            "record" => deckcraft_agent_ui::voice::preview(deckcraft_agent_ui::voice::Preview {
+                recording: Some((4.0, vec![format!("2/{}", table.0), format!("2/{growth_id}")])),
+                downloading: None,
+            }),
+            "download" => deckcraft_agent_ui::voice::preview(deckcraft_agent_ui::voice::Preview {
+                recording: None,
+                downloading: Some((61_000_000, 190_000_000)),
+            }),
+            _ => {}
+        }
     }
     if slide != 2 {
         let _ = session.execute("slide.go", &json!({"index": slide.saturating_sub(1)}));

@@ -32,7 +32,9 @@ macro_rules! spec {
 
 pub static SPECS: &[CommandSpec] = &[
     // the presenter's side
-    spec!(change "agent.ask", "Ask the Agent", "{text, slide?, shape?, words?, cell?, topic?, new?: bool} (default: the selection) — joins the topic the place has, or starts one → {id, topic}", has_slide, crate::topic_cmds::ask),
+    spec!(change "agent.ask", "Ask the Agent", "{text, slide?, shape?, words?, cell?, topic?, new?: bool, refs?: [{n, slide, shape?}] (what ⟦n⟧ in the text points at), spoken?: bool, transcribing?: bool (spoken, text still coming: not with the agent until agent.spoken)} (default: the selection) — joins the topic the place has, or starts one → {id, topic}", has_slide, crate::topic_cmds::ask),
+    spec!(change "agent.spoken", "Spoken Question Transcribed", "{id, text} — the text is ready: the question goes to the agent; {id, error} — the transcription failed; {id} — transcribing again", has_doc, crate::topic_cmds::spoken),
+    spec!(change "agent.removeQuestion", "Dismiss Spoken Question", "{id} — a spoken question still being transcribed, or whose transcription failed", has_doc, crate::topic_cmds::remove_question),
     spec!(change "agent.newTopic", "New Topic", "{slide?, shape?, words?} (default: the selection)", has_slide, crate::topic_cmds::new_topic),
     spec!(change "agent.setStatus", "Set Status", "{topic, status: open|revise|agreed|info, text?} — only a person sets agreed", has_doc, crate::topic_cmds::set_status),
     spec!(change "agent.proposeAgreed", "Propose Agreed", "{topic, reasons} — the agent's suggestion; the person confirms", has_doc, crate::topic_cmds::propose_agreed),
@@ -292,6 +294,10 @@ fn status_matches(q: &Question, want: &str) -> bool {
     if q.hidden && want != "withdrawn" {
         return false;
     }
+    // A spoken question still being transcribed has no text yet: not the agent's.
+    if q.status.is_draft() {
+        return want == "drafts";
+    }
     // An unanswered check is stale after a minute: nobody should wake up for it (the status
     // still says "No answer to check").
     if q.is_ping() && now_ms().saturating_sub(q.asked_at) >= crate::listener::PING_TIMEOUT_MS {
@@ -325,6 +331,23 @@ pub fn question_json(s: &Session, l: &Layer, m: &Masker, q: &Question) -> Json {
         if let Some(t) = l.topic(&q.topic) {
             o["topic"] = json!({"id": t.id, "number": nums.topic(&t.id), "status": t.status.id(), "statusText": m.text(&crate::textlinks::plain(d, l, &nums, &t.status_text))});
         }
+        if !q.refs.is_empty() {
+            // What the person pointed at while speaking: in the text where they pointed, and listed.
+            let refs: Vec<Json> = q.refs.iter().map(|r| ref_json(d, l, r)).collect();
+            o["spokenText"] = json!(m.text(&crate::textlinks::plain(d, l, &nums, &q.text)));
+            o["text"] = json!(m.text(&expand_refs(&crate::textlinks::render(d, l, &nums, &q.text), &refs)));
+            o["refs"] = json!(
+                refs.iter()
+                    .map(|r| {
+                        let mut r = r.clone();
+                        if let Some(w) = r.get("where").and_then(Json::as_str) {
+                            r["where"] = json!(m.text(w));
+                        }
+                        r
+                    })
+                    .collect::<Vec<_>>()
+            );
+        }
     }
     if q.is_ping() {
         o["where"] = Json::Null;
@@ -333,6 +356,39 @@ pub fn question_json(s: &Session, l: &Layer, m: &Masker, q: &Question) -> Json {
         o["where"] = where_json(s, l, m, &q.anchor);
     }
     o
+}
+
+/// A shape or slide pointed at while speaking: where it is now, its link, a few of its words.
+fn ref_json(d: &deckcraft_engine::DocState, l: &Layer, r: &layer::QuestionRef) -> Json {
+    let ix = anchor::Index::of(&d.doc);
+    let Some(w) = l.anchor(&r.anchor).and_then(|a| anchor::resolve(&d.doc, &ix, a)) else {
+        let was = l.anchor(&r.anchor).map(|a| a.was.clone()).unwrap_or_default();
+        return json!({"n": r.n, "removed": true, "where": format!("removed — was {was}")});
+    };
+    let mut o = json!({"n": r.n, "slide": w.slide + 1, "href": w.href(), "where": crate::topics::where_label(&d.doc, &w)});
+    if let Some(id) = w.shape {
+        o["shape"] = json!(id.0);
+        let text = d.doc.slides.get(w.slide).and_then(|s| s.shape(id)).and_then(|sh| sh.text.as_ref()).map(|t| t.text()).unwrap_or_default();
+        let words: String = text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(80).collect();
+        if !words.is_empty() {
+            o["text"] = json!(words);
+        }
+    }
+    o
+}
+
+/// `⟦1⟧` → `⟦1: slide 2 › TextBox 3 “Revenue grew 6%…”⟧`.
+pub(crate) fn expand_refs(text: &str, refs: &[Json]) -> String {
+    let mut out = text.to_string();
+    for r in refs {
+        let Some(n) = r.get("n").and_then(Json::as_u64) else { continue };
+        let mut what = r.get("where").and_then(Json::as_str).unwrap_or("").to_string();
+        if let Some(t) = r.get("text").and_then(Json::as_str) {
+            what.push_str(&format!(" “{t}”"));
+        }
+        out = out.replace(&format!("⟦{n}⟧"), &format!("⟦{n}: {what}⟧"));
+    }
+    out
 }
 
 fn questions(s: &mut Session, p: &Json) -> Result<Json> {

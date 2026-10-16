@@ -31,7 +31,7 @@ alive" before changing anything outside the agent crates.
 ### The patch to upstream files
 
 Every edit to a file that exists upstream carries a `fork:agent` comment.
-`git grep -n fork:agent -- ':!crates/agent*' ':!agent-layer'` lists them: 31 lines, all insertions
+`git grep -n fork:agent -- ':!crates/agent*' ':!agent-layer'` lists them: 40 lines, all insertions
 or one-line changes:
 
 - `crates/engine/src/lib.rs`: `pub mod ext;`; in `Session::execute` the observers before and after
@@ -47,6 +47,11 @@ or one-line changes:
 - `crates/ui-egui/src/ribbon.rs`: extension tabs (`ext::ribbon_tabs`) known and listed after the
   built-in tabs, their content drawn by `ext::ribbon_tab` (5 lines).
 - `apps/deckcraft/src/main.rs` (4 lines: `--agent-stdio` on the first line of `main`), `apps/deckcraft/Cargo.toml` (2): wiring.
+- `apps/deckcraft/Cargo.toml` and `apps/deckcraft/src/audio.rs` (1 + 6 lines): cpal 0.16 → 0.18, the
+  version craft-voice uses (only one cpal may link ALSA); the API changes are the stream config by
+  value, `sample_rate()` as a number and `cpal::Error` with `kind()`.
+- `packaging/macos/Info.plist.in`, `entitlements.plist` (1 line each): the microphone usage text and
+  the hardened runtime's audio-input entitlement, for voice questions.
 - `Cargo.toml`: the two workspace dependencies.
 - `xtask/src/layers.rs`: the two crates in the layer table (L6) and their order within L6.
 
@@ -67,6 +72,22 @@ upstream. Each one accepted upstream removes its lines from the patch.
   View they show only when the presenter ticks "Show topic markers" under the notes. Only a person
   sets Agreed; the agent proposes it and the card has Confirm Agreed. A linked table whose source
   changed raises its topics to Revise (by DeckCraft, in the log), once per change.
+- **Voice questions** (`crates/agent-ui/src/voice.rs`, the same as GridCraft's, `craft-voice` as a git
+  dependency at a fixed rev, native only): hold ⌥ (Option; Alt elsewhere) alone for 0.2 s, or click
+  **Ask by Voice** on the Agent tab; speak, click the shapes or slides you mean; release (or click
+  again) and the question goes on at once, without a preview or a confirmation. Every click on the
+  slide and every other selection change (a thumbnail, the keys) while recording is a pointer at the
+  moment it began; craft-voice transcribes locally (Whisper small or turbo, the person's choice on
+  the ribbon, downloaded once into `ArtCraft/voice-models`, an app setting in `voice.json`) and
+  splices `⟦n⟧` markers into the text by time. The question is asked "transcribing" at once
+  (`agent.ask {transcribing, spoken, refs: [{n, slide, shape?}]}`), so its topic gets one place per
+  thing pointed at ("pointed at while asking"); `agent.spoken` gives it the text and sends it to the
+  agent, who reads `⟦1: slide 2 › TextBox 3 “Revenue grew 6%”⟧` (masked like every read) and
+  `refs`. A failed transcription is a flag with Retry and Dismiss (`agent.removeQuestion`), never a
+  dialog. Drafts and audio are never saved; the audio goes once the text is there. ⌥ with another
+  key is a shortcut, a tap is nothing, Esc cancels, and a voice ⌥ never arms the Agent tab's
+  keytip. `agent.voiceModel {model: off|small|turbo}`, `agent.voiceStatus`. craft-voice needs a
+  `zip` that crates.io yanked; `rebase.sh` seeds it back into upstream's lock.
 - **Links inside text are anchors.** `[slide 4](slide:4)`, `shape:`, `place:`, `topic:`, `note:`
   and a plain "slide 4" are stored as `anchor:<id>` (or topic and place ids) when an answer, note,
   status text or question is stored, and shown with the current address: insert a slide before it

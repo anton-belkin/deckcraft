@@ -7,7 +7,7 @@ use serde_json::{Value as Json, json};
 
 use crate::anchor::{self, Index, Place as Where};
 use crate::commands::{actor_p, links_p, masked_p, place_p, str_p, text_p};
-use crate::layer::{self, Actor, Answer, Note, Place, Question, QuestionStatus, Status, Topic};
+use crate::layer::{self, Actor, Answer, Note, Place, Question, QuestionRef, QuestionStatus, Status, Topic};
 use crate::privacy::Masker;
 use crate::undo::{self, Op};
 use crate::{bad, now_ms, textlinks, topics};
@@ -100,26 +100,65 @@ fn topic_for(s: &mut Session, p: &Json, place: &Where, cmd: &str) -> Result<(Str
 
 /// `agent.ask`: a question on the selection (or the place named). It joins the topic the place
 /// already has, or starts one (`new: true` always starts one; `topic` names one).
+///
+/// Spoken questions (`spoken`, `transcribing`): `refs: [{n, slide, shape?}]` is what the person
+/// pointed at while speaking (marker `⟦n⟧` in the text); each becomes a place of the topic. While
+/// `transcribing` the question has no text and isn't the agent's yet (`agent.spoken` gives it the
+/// text).
 pub fn ask(s: &mut Session, p: &Json) -> Result<Json> {
-    let raw = text_p(p, "text", "agent.ask")?;
+    let transcribing = p.get("transcribing").and_then(Json::as_bool).unwrap_or(false);
+    let raw = if transcribing { str_p(p, "text").unwrap_or("").chars().take(20_000).collect() } else { text_p(p, "text", "agent.ask")? };
+    let spoken = transcribing || p.get("spoken").and_then(Json::as_bool).unwrap_or(false);
     let place = place_p(s, p, "agent.ask")?;
-    let (tid, created, places) = topic_for(s, p, &place, "agent.ask")?;
-    let text = textlinks::store(s, &raw)?;
+    // What was pointed at, each its anchor.
+    let mut refs: Vec<QuestionRef> = vec![];
+    for r in p.get("refs").and_then(Json::as_array).map(Vec::as_slice).unwrap_or_default().iter().take(50) {
+        let n = r.get("n").and_then(Json::as_u64).and_then(|n| u32::try_from(n).ok()).ok_or_else(|| bad("agent.ask", "each ref needs `n`"))?;
+        if refs.iter().any(|x| x.n == n) {
+            continue;
+        }
+        let w = place_p(s, r, "agent.ask")?;
+        refs.push(QuestionRef { n, anchor: anchor::anchor_at(s, &w)? });
+    }
+    let (tid, created, mut places) = topic_for(s, p, &place, "agent.ask")?;
+    let text = if transcribing { raw } else { textlinks::store(s, &raw)? };
     let a = anchor::anchor_at(s, &place)?;
     let actor = actor_p(p, Actor::Human);
-    let id = layer::update(s.doc()?, |l| {
+    let (id, added) = layer::update(s.doc()?, |l| {
         let id = l.fresh_id("q");
+        // What was pointed at becomes places of the topic.
+        let mut added = vec![];
+        for r in &refs {
+            let has = l.topic(&tid).is_some_and(|t| topics::live(t).any(|p| p.anchors.contains(&r.anchor)));
+            if has {
+                continue;
+            }
+            let pid = l.fresh_id("p");
+            if let Some(t) = l.topics.iter_mut().find(|t| t.id == tid) {
+                t.places.push(Place {
+                    id: pid.clone(),
+                    anchors: vec![r.anchor.clone()],
+                    reason: "pointed at while asking".into(),
+                    by: actor,
+                    ..Default::default()
+                });
+                added.push(pid);
+            }
+        }
         l.questions.push(Question {
             id: id.clone(),
             anchor: a,
             text,
-            status: QuestionStatus::Pending,
+            status: if transcribing { QuestionStatus::Transcribing } else { QuestionStatus::Pending },
             asked_at: now_ms(),
             topic: tid.clone(),
+            refs: refs.clone(),
+            spoken,
             ..Default::default()
         });
-        id
+        (id, added)
     });
+    places.extend(added);
     if actor == Actor::Human {
         undo::push(s, Op::Ask { question: id.clone(), topic: created.then(|| tid.clone()), places });
     }
@@ -127,6 +166,68 @@ pub fn ask(s: &mut Session, p: &Json) -> Result<Json> {
     let l = layer::get(d);
     let nums = topics::numbers_of(d, &l);
     Ok(json!({"id": id, "topic": nums.topic(&tid), "topicId": tid, "place": place.label(&d.doc)}))
+}
+
+/// `agent.spoken {id, text}`: a spoken question's text is ready (it goes to the agent);
+/// `{id, error}`: the transcription failed; `{id}`: transcribing again.
+pub fn spoken(s: &mut Session, p: &Json) -> Result<Json> {
+    let id = text_p(p, "id", "agent.spoken")?;
+    let text: Option<String> = str_p(p, "text").map(str::trim).filter(|t| !t.is_empty()).map(|t| t.chars().take(20_000).collect());
+    let text = match text {
+        Some(t) => Some(textlinks::store(s, &t)?),
+        None => None,
+    };
+    let error: Option<String> = str_p(p, "error").map(|e| e.chars().take(2_000).collect());
+    let r = layer::update(s.doc()?, |l| {
+        let Some(q) = l.questions.iter_mut().find(|q| q.id == id) else { return Err(format!("no question `{id}`")) };
+        if !q.status.is_draft() {
+            return Err(format!("question `{id}` is already with the agent"));
+        }
+        match (text, error) {
+            (Some(t), _) => {
+                q.text = t;
+                q.error.clear();
+                q.status = QuestionStatus::Pending;
+                q.asked_at = now_ms();
+            }
+            (None, Some(e)) => {
+                q.error = if e.trim().is_empty() { "The transcription failed".into() } else { e };
+                q.status = QuestionStatus::Failed;
+            }
+            (None, None) => {
+                q.error.clear();
+                q.status = QuestionStatus::Transcribing;
+            }
+        }
+        Ok(format!("{:?}", q.status).to_lowercase())
+    });
+    r.map(|status| json!({"id": id, "status": status})).map_err(|m| bad("agent.spoken", m))
+}
+
+/// `agent.removeQuestion {id}`: a spoken question still being transcribed, or whose transcription
+/// failed, is dropped (with the topic only it made, and the places it added).
+pub fn remove_question(s: &mut Session, p: &Json) -> Result<Json> {
+    let id = text_p(p, "id", "agent.removeQuestion")?;
+    let r = layer::update(s.doc()?, |l| match l.questions.iter().position(|q| q.id == id) {
+        Some(i) if l.questions.get(i).is_some_and(|q| q.status.is_draft()) => {
+            let q = l.questions.remove(i);
+            let alone = !l.questions.iter().any(|x| x.topic == q.topic);
+            let refs: Vec<String> = q.refs.iter().map(|r| r.anchor.clone()).collect();
+            if let Some(t) = l.topics.iter_mut().find(|t| t.id == q.topic) {
+                if alone && t.places.iter().all(|p| p.by != Actor::Agent) && !l.notes.iter().any(|n| n.topic == q.topic) {
+                    t.hidden = true;
+                } else {
+                    for p in t.places.iter_mut().filter(|p| p.reason == "pointed at while asking" && p.anchors.iter().all(|a| refs.contains(a))) {
+                        p.rejected = true;
+                    }
+                }
+            }
+            Ok(())
+        }
+        Some(_) => Err(format!("question `{id}` is with the agent already")),
+        None => Err(format!("no question `{id}`")),
+    });
+    r.map(|()| json!({"id": id})).map_err(|m| bad("agent.removeQuestion", m))
 }
 
 /// `agent.newTopic`: a topic on the selection without a question (a note or a status to come).
