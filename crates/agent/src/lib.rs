@@ -101,6 +101,13 @@ pub fn paste_as_picture() -> bool {
     PASTE_PICTURE.load(Ordering::Relaxed)
 }
 
+/// `waiting` (wait_for_questions) means a listener; `poll` (/events, the channel, the runner) is
+/// the app's own polling. Neither is a tool call of the agent ("last call").
+pub(crate) fn counts_as_call(params: &Json) -> bool {
+    let flag = |k: &str| params.get(k).and_then(Json::as_bool) == Some(true);
+    !flag("waiting") && !flag("poll")
+}
+
 /// In mode Off, a call from the agent is refused.
 pub(crate) fn refused_when_off(mode: listener::Mode, params: &Json) -> bool {
     mode == listener::Mode::Off && params.get("actor").and_then(Json::as_str) == Some("agent")
@@ -147,9 +154,11 @@ fn is_view_only(id: &str) -> bool {
 impl Observer for Keeper {
     fn before(&self, s: &mut Session, id: &str, params: &Json) {
         if (id.starts_with("agent.") || id.starts_with("link.")) && params.get("actor").and_then(Json::as_str) == Some("agent") {
-            LAST_AGENT_CALL.store(now_ms(), Ordering::Relaxed);
-            if id == "agent.questions" && params.get("waiting").and_then(Json::as_bool) == Some(true) {
+            if params.get("waiting").and_then(Json::as_bool) == Some(true) {
                 listener::note_wait();
+            }
+            if counts_as_call(params) {
+                LAST_AGENT_CALL.store(now_ms(), Ordering::Relaxed);
             }
         }
         if let Some(l) = params.get("listener").and_then(Json::as_str) {
@@ -189,7 +198,7 @@ impl Observer for Keeper {
         }
         // Mode Off: the agent's calls are refused (the person's still work).
         if refused_when_off(listener::mode(), params) {
-            return Some(Err(bad(id, "the agent is switched off in DeckCraft (Agent ▸ Connection ▸ Mode)")));
+            return Some(Err(EngineError::Other("the agent connection is off in DeckCraft (Agent tab ▸ Connection ▸ Mode)".into())));
         }
         if id != "edit.paste" {
             return None;

@@ -303,6 +303,11 @@ fn remove_note(s: &mut Session, p: &Json) -> Result<Json> {
 // ---------------------------------------------------------------- agent's side
 
 fn status_matches(q: &Question, want: &str) -> bool {
+    // An unanswered check is stale after a minute: nobody should wake up for it (the status
+    // still says "No answer to check").
+    if q.is_ping() && now_ms().saturating_sub(q.asked_at) >= crate::listener::PING_TIMEOUT_MS {
+        return false;
+    }
     match want {
         "pending" => q.status == QuestionStatus::Pending,
         "working" => q.status == QuestionStatus::Working,
@@ -816,7 +821,7 @@ fn ping(s: &mut Session, p: &Json) -> Result<Json> {
     let uid = d.uid;
     let id = layer::update(d, |l| {
         l.questions.retain(|q| !q.is_ping());
-        let id = l.fresh_id("ping");
+        let id = format!("ping{}", now_ms());
         l.questions.push(Question {
             id: id.clone(),
             anchor: String::new(),

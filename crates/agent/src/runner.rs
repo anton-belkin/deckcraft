@@ -4,7 +4,7 @@
 //! It runs in a neutral folder (`ArtCraft/agent-sessions/`) unless the person chose the deck's
 //! folder as its project (PROTOCOL §4: demoted, and explicit about what it implies), sees only the DeckCraft MCP server (`--strict-mcp-config`), may use only its tools
 //! (`--allowedTools mcp__deckcraft__*`), gets the agent skill as its system prompt, and is bounded
-//! by `--max-turns` and `--max-budget-usd`. It is named `DeckCraft · <file>` (`/rename`); its
+//! by `--max-turns` and `--max-budget-usd`. It is named `DeckCraft · <file>` (`--name`); its
 //! session id lives in the layer, so reopening the deck resumes the same conversation; a resume
 //! that fails here, or New session, starts a fresh one from a summary of the history. Never
 //! `--bare` (it needs an API key; a subscription login works without one). Stop is end of input,
@@ -183,9 +183,11 @@ pub fn status(uid: u64) -> Option<Status> {
 }
 
 /// The arguments the agent CLI is started with.
-pub fn args(c: &Config, session: &str, resume: bool, mcp_config: &str, skill: Option<&str>) -> Vec<String> {
+pub fn args(c: &Config, session: &str, resume: bool, mcp_config: &str, skill: Option<&str>, name: &str) -> Vec<String> {
     let mut a: Vec<String> =
         ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"].iter().map(|s| s.to_string()).collect();
+    // Its name in the session lists (claude 2.1.301+).
+    a.extend(["--name".to_string(), name.to_string()]);
     a.extend([if resume { "--resume" } else { "--session-id" }.to_string(), session.to_string()]);
     a.extend(["--mcp-config".to_string(), mcp_config.to_string(), "--strict-mcp-config".to_string()]);
     a.extend(["--allowedTools".to_string(), "mcp__deckcraft__*".to_string()]);
@@ -297,7 +299,7 @@ pub fn start(s: &Session) -> std::result::Result<Status, String> {
     let cwd = session_folder(&c, d.path.as_deref());
     let _ = std::fs::create_dir_all(&cwd);
     let mut child = Command::new(&c.command)
-        .args(args(&c, &session, resume, &mcp, skill.as_deref()))
+        .args(args(&c, &session, resume, &mcp, skill.as_deref(), &format!("DeckCraft · {}", crate::documents::title(d))))
         .current_dir(&cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -316,9 +318,9 @@ pub fn start(s: &Session) -> std::result::Result<Status, String> {
         let _ = std::thread::Builder::new().name("agent-stderr".into()).spawn(move || read_stderr(stderr, sh));
     }
     let mut agent = Agent { child, stdin, sent: HashSet::new(), shared, resumed: resume };
-    // Name it for the session lists, and give a fresh session the history.
-    let mut first = vec![format!("/rename DeckCraft · {}", d.title())];
-    if !resume && (fresh || !l.log.is_empty()) {
+    // A fresh session gets the history, when there is one.
+    let mut first = vec![];
+    if !resume && !l.log.is_empty() {
         first.push(seed(&l));
     }
     for m in first {
@@ -432,7 +434,13 @@ pub fn tick(s: &mut Session) {
         gone
     };
     let l = layer::get(d);
-    let pending: Vec<String> = l.questions.iter().filter(|q| q.status == QuestionStatus::Pending).map(|q| q.id.clone()).collect();
+    let now = crate::now_ms();
+    let pending: Vec<String> = l
+        .questions
+        .iter()
+        .filter(|q| q.status == QuestionStatus::Pending && !(q.is_ping() && now.saturating_sub(q.asked_at) >= listener::PING_TIMEOUT_MS))
+        .map(|q| q.id.clone())
+        .collect();
     if pending.is_empty() {
         return;
     }
@@ -462,7 +470,7 @@ pub fn tick(s: &mut Session) {
     if new.is_empty() {
         return;
     }
-    let list = match s.execute("agent.questions", &json!({"status": "pending", "masked": true})) {
+    let list = match s.execute("agent.questions", &json!({"status": "pending", "masked": true, "poll": true})) {
         Ok(Json::Array(v)) => v,
         _ => return,
     };

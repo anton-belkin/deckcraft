@@ -749,9 +749,10 @@ fn the_background_agent_is_started_as_specified_and_a_failure_is_shown() {
     let _g = MODE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let c =
         crate::runner::Config { data_dir: Some(std::env::temp_dir().join(format!("deckcraft-runner-{}", std::process::id()))), ..Default::default() };
-    let a = crate::runner::args(&c, "S1", false, "/m.json", Some("/skill.md"));
+    let a = crate::runner::args(&c, "S1", false, "/m.json", Some("/skill.md"), "DeckCraft · board.pptx");
     let joined = a.join(" ");
     for want in [
+        "--name DeckCraft · board.pptx",
         "-p",
         "--input-format stream-json",
         "--output-format stream-json",
@@ -764,7 +765,7 @@ fn the_background_agent_is_started_as_specified_and_a_failure_is_shown() {
         assert!(joined.contains(want), "{want} in {joined}");
     }
     assert!(!joined.contains("--bare"));
-    assert!(crate::runner::args(&c, "S1", true, "/m.json", None).join(" ").contains("--resume S1"));
+    assert!(crate::runner::args(&c, "S1", true, "/m.json", None, "x").join(" ").contains("--resume S1"));
     let neutral = crate::runner::session_folder(&c, Some("/Users/x/Clients/Acme/board.pptx"));
     assert!(neutral.ends_with("agent-sessions"), "{neutral:?}");
     let opted = crate::runner::Config { use_deck_folder: true, ..c.clone() };
@@ -894,9 +895,36 @@ fn the_registry_file_lists_the_decks_and_goes_away() {
     assert_eq!(v["mcp"], "http://127.0.0.1:7984/mcp");
     let ids: Vec<&str> = v["documents"].as_array().unwrap().iter().map(|d| d["id"].as_str().unwrap()).collect();
     assert!(ids.contains(&a.as_str()) && ids.contains(&b.as_str()));
-    assert!(v["documents"].as_array().unwrap().iter().all(|d| d.get("openQuestions").is_some() && d.get("listeners").is_some()));
+    assert!(
+        v["documents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|d| d.get("openQuestions").is_some() && d.get("listeners").is_some() && d.get("focusedAt").is_some())
+    );
     assert!(!v.to_string().contains("Question in A"), "no content in the registry");
     crate::registry::remove();
     assert!(!f.exists());
     crate::registry::set_dir(None);
+}
+
+#[test]
+fn a_stale_check_drops_out_and_polls_are_not_tool_calls() {
+    let _g = MODE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let (mut s, _, _) = deck();
+    let id = run(&mut s, "agent.ping", json!({}))["id"].as_str().unwrap().to_string();
+    assert!(id.starts_with("ping") && id[4..].parse::<u64>().is_ok(), "ping<ms>: {id}");
+    // Make it a minute old: nobody gets it any more.
+    layer::update(s.doc().unwrap(), |l| {
+        if let Some(q) = l.questions.iter_mut().find(|q| q.id == id) {
+            q.asked_at = q.asked_at.saturating_sub(61_000);
+        }
+    });
+    let qs = run(&mut s, "agent.questions", json!({"status": "pending", "actor": "agent"}));
+    assert!(qs.as_array().unwrap().iter().all(|q| q["id"] != id.as_str()));
+    // Polls (`/events`, the channel, the runner) and waits don't count as the agent's calls.
+    assert!(!crate::counts_as_call(&json!({"poll": true})));
+    assert!(!crate::counts_as_call(&json!({"waiting": true})));
+    assert!(crate::counts_as_call(&json!({"id": "q1"})));
+    crate::listener::set_ping(None);
 }

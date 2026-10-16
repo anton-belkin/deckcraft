@@ -21,7 +21,7 @@ static MODE_GIVEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool
 
 /// Where the app remembers the agent mode (the app's setting, never the file's).
 fn mode_file() -> Option<std::path::PathBuf> {
-    crate::config_dir().map(|d| d.join("agent-mode"))
+    crate::config_dir().map(|d| d.join("agent").join("mode"))
 }
 
 /// Takes the agent's own flags out of the files the command line named (the app's own parser

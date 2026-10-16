@@ -97,6 +97,8 @@ pub(crate) struct AgentUi {
     pub presenter_uid: Option<u64>,
     pub checker: checker::Checker,
     pub ribbon: ribbon::State,
+    /// Window focus and the active deck, last frame.
+    pub focus: (bool, Option<u64>),
 }
 
 /// The agent layer's colours (not in the theme: they mean the same in light and dark).
@@ -242,6 +244,16 @@ impl UiExtension for AgentUi {
         deckcraft_agent::runner::tick(&mut app.session);
         // AItoCraft's registry: which decks are open, who listens (debounced; a heartbeat keeps
         // it fresh while frames are rare). Gone when the window closes.
+        // focusedAt (AItoCraft picks "the open file" by it): when the window gains focus or another
+        // deck becomes active.
+        let now_focus = (ctx.input(|i| i.focused), app.session.active().map(|d| d.uid));
+        if now_focus != self.focus
+            && now_focus.0
+            && let Some(uid) = now_focus.1
+        {
+            deckcraft_agent::documents::focused(uid);
+        }
+        self.focus = now_focus;
         if let Some(url) = server_url() {
             if ctx.input(|i| i.viewport().close_requested()) {
                 deckcraft_agent::registry::remove();

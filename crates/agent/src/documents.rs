@@ -42,6 +42,26 @@ pub fn title(d: &DocState) -> String {
     d.path.as_deref().and_then(|p| std::path::Path::new(p).file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| d.title())
 }
 
+static FOCUSED: std::sync::Mutex<Vec<(u64, u64)>> = std::sync::Mutex::new(Vec::new());
+
+/// The deck `uid` has focus now (its window came to the front, or it became the active deck).
+pub fn focused(uid: u64) {
+    let mut g = match FOCUSED.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    g.retain(|(u, _)| *u != uid);
+    g.push((uid, crate::now_ms()));
+    if g.len() > 256 {
+        g.remove(0);
+    }
+}
+
+/// When the deck last had focus (ms; 0: never in this run).
+pub fn focused_at(uid: u64) -> u64 {
+    FOCUSED.lock().ok().and_then(|g| g.iter().find(|(u, _)| *u == uid).map(|(_, t)| *t)).unwrap_or(0)
+}
+
 /// The registry object of a deck.
 pub fn entry(d: &DocState, frontmost: bool) -> Json {
     let l = layer::get(d);
@@ -53,6 +73,7 @@ pub fn entry(d: &DocState, frontmost: bool) -> Json {
         "title": title(d),
         "path": d.path.as_deref().and_then(|p| std::path::absolute(p).ok()).map(|p| p.to_string_lossy().to_string()),
         "frontmost": frontmost,
+        "focusedAt": focused_at(d.uid),
         "openQuestions": open,
         "listeners": listeners,
     })

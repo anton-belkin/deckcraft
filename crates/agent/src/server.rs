@@ -252,7 +252,10 @@ fn channel_stream(mut w: TcpStream, control: &str) {
             return;
         }
         if let Ok(b) = backend(&mut slot, control) {
-            match b.call("engine.execute", json!({"command": "agent.questions", "params": {"status": "pending", "actor": "agent", "masked": true}})) {
+            match b.call(
+                "engine.execute",
+                json!({"command": "agent.questions", "params": {"status": "pending", "actor": "agent", "masked": true, "poll": true}}),
+            ) {
                 Ok(Value::Array(list)) => {
                     for q in list {
                         let Some(id) = q.get("id").and_then(Value::as_str).map(str::to_string) else { continue };
@@ -296,7 +299,7 @@ fn events(mut w: TcpStream, control: &str, document: Option<String>) {
     let mut slot: Option<Remote> = None;
     loop {
         if let Ok(b) = backend(&mut slot, control) {
-            let mut params = json!({"status": "pending", "actor": "agent", "masked": true});
+            let mut params = json!({"status": "pending", "actor": "agent", "masked": true, "poll": true});
             if let Some(d) = &document {
                 params["document"] = json!(d);
             }

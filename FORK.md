@@ -95,23 +95,28 @@ upstream. Each one accepted upstream removes its lines from the patch.
   *Copy ▾*, whose items depend on the mode, each copying one thing: Claude Code: add MCP server,
   Monitor command, Connect Cowork… / 1. Add channel server, 2. Start Claude Code with the channel /
   for the background agent, Open session in Claude Desktop and New session instead. URL, ports,
-  the session and the last error are under Details. The mode is the app's (remembered in the
-  settings folder, or `--agent-mode`), never the file's: a deck someone sends must not start an
+  the session and the last error are under Details. The mode is the app's (remembered in
+  `<settings>/agent/mode`; `--agent-mode` overrides it), never the file's: a deck someone sends must not start an
   agent that spends the reader's money.
 - **AItoCraft** (`~/aitocraft/PROTOCOL.md`): one MCP hub, configured once in Claude Desktop /
   Cowork and Claude Code, serves every open document of every Craft app; the person picks the
   context by starting the conversation where the work belongs and saying which deck. DeckCraft's
   side: the registry file `ArtCraft/agents/deckcraft-<pid>.json` (`registry.rs`: atomic writes,
   at most once a second on change, a 10 s heartbeat, deleted when the window closes) lists the open
-  decks (`deckcraft:<pid>:<doc uid>`, title, path, frontmost, open questions, listeners; no
-  content). Every tool takes `document` and works on a deck that isn't active (the observer makes
+  decks (`deckcraft:<pid>:<doc uid>`, title, path, frontmost, `focusedAt`, open questions,
+  listeners; no content). Every tool takes `document` and works on a deck that isn't active (the observer makes
   it active for the command, so its undo step lands there, and puts the active deck back; an
   unknown id is "document … is not open in DeckCraft"). `list_documents`, `attach {document,
   label}` → a listener, `detach`; `listener` on the question tools refreshes it (dropped after
   90 s); questions carry `document` and `documentTitle`; `GET /events?document=<id>` follows one
   deck; a check goes to the active deck's listeners and records who answered. The Connection
   status is per deck: "Listening: Cowork · Acme · 20 s ago", the check, or "Nobody is listening for
-  this document" (questions still queue). Modes, in order: Claude Desktop / Cowork (AItoCraft),
+  this document" (questions still queue). A check's id is `ping<ms>`; unanswered, it drops out of
+  `agent.questions` after 60 s (the status still says "No answer to check"). `wait_for_questions`
+  sends `waiting: true` (a listener for 60 s), the app's own polls (`/events`, the channel, the
+  runner) `poll: true`; neither counts as the agent's last call. In Off, every agent-side command
+  is refused with "the agent connection is off in DeckCraft (Agent tab ▸ Connection ▸ Mode)";
+  `initialize` and `tools/list` still answer. Modes, in order: Claude Desktop / Cowork (AItoCraft),
   My Claude Code session (AItoCraft channel), Background agent, Off. Copy: Copy phrase for Claude,
   Install AItoCraft in Claude Desktop (`aitocraft --install-desktop`, when the binary is found:
   `AITOCRAFT_BIN`, the PATH, `~/aitocraft/target/release`), Claude Code: add AItoCraft (and, in
@@ -132,7 +137,7 @@ upstream. Each one accepted upstream removes its lines from the patch.
   your subscription. It sees only this document. Uses your limits." With
   `--strict-mcp-config` and only the DeckCraft server, `--allowedTools "mcp__deckcraft__*"`, the
   skill as `--append-system-prompt-file`, `--max-turns 40`, `--max-budget-usd 3`. It is named
-  `/rename DeckCraft · <file>`, gets each new question once as a stream-json user message, and its
+  `--name "DeckCraft · <file>"`, gets each new question once as a stream-json user message, and its
   session id is kept in the layer: reopening the deck resumes it (`--resume`); a resume that fails
   here, or New session, starts a fresh one from a summary of the history. Stop is end of input,
   then SIGINT, then kill. Never `--bare`. `DECKCRAFT_AGENT_COMMAND` replaces `claude`; tests and the
