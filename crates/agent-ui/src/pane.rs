@@ -337,15 +337,7 @@ fn links_tab(app: &SlideApp, ui: &mut Ui, t: &Tokens, p: &Palette, acts: &mut Ve
     let Some(d) = app.session.active() else { return };
     let all = links::all(&d.doc);
     ui.horizontal(|ui| {
-        ui.label(
-            RichText::new(format!(
-                "{} linked table{} and picture{}",
-                all.len(),
-                if all.len() == 1 { "" } else { "s" },
-                if all.len() == 1 { "" } else { "s" }
-            ))
-            .color(t.text_dim),
-        );
+        ui.label(RichText::new(format!("{} link{} to spreadsheet cells", all.len(), if all.len() == 1 { "" } else { "s" })).color(t.text_dim));
         if !all.is_empty() && ui.small_button("Check Now").clicked() {
             acts.push(Act::CheckNow);
         }

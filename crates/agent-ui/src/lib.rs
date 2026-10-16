@@ -334,8 +334,11 @@ impl AgentUi {
         egui::Area::new(egui::Id::new("agent_launcher")).pivot(egui::Align2::RIGHT_BOTTOM).fixed_pos(pos).order(egui::Order::Foreground).show(
             ctx,
             |ui| {
-                let b =
-                    egui::Button::new(RichText::new(text).color(Color32::WHITE).strong()).fill(color).corner_radius(12.0).min_size(vec2(0.0, 26.0));
+                let b = egui::Button::new(RichText::new(text).color(Color32::WHITE).strong())
+                    .fill(color)
+                    .corner_radius(12.0)
+                    .min_size(vec2(0.0, 26.0))
+                    .wrap_mode(egui::TextWrapMode::Extend);
                 if ui.add(b).on_hover_text("Questions, answers, notes and linked cells").clicked() {
                     self.open = true;
                     self.tab = tab;
