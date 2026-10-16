@@ -6,7 +6,7 @@
 //!
 //! `cargo run -p deckcraft-agent-ui --example agent_snapshot -- [--pane selection|overview|history|topic:N]
 //!  [--slide N] [--hover-link] [--presenter] [--agent-tab] [--collapsed]
-//!  [--status answering|checking|noanswer|listener|listening|nobody] [--mode connect|channel|background|off] [--menu] [--size 1440x900] [--dark] out.png`
+//!  [--context none|web|cowork|code|folder] [--status listening|checking] [--logged-in] [--menu steps|modes] [--size 1440x900] [--dark] out.png`
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use deckcraft_agent::links;
@@ -181,7 +181,7 @@ fn demo(dir: &std::path::Path) -> (Session, ShapeId) {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (mut pane, mut slide, mut hover, mut dark, mut presenter, mut agent_tab, mut collapsed) = (None, 2usize, false, false, false, false, false);
-    let (mut status, mut mode, mut menu): (Option<String>, Option<String>, bool) = (None, None, false);
+    let (mut status, mut context, mut menu, mut logged_in): (Option<String>, Option<String>, Option<String>, bool) = (None, None, None, false);
     let mut size = (1440.0f32, 900.0f32);
     let mut out = "agent.png".to_string();
     let mut it = args.into_iter();
@@ -194,8 +194,9 @@ fn main() {
             "--agent-tab" => agent_tab = true,
             "--collapsed" => collapsed = true,
             "--status" => status = it.next(),
-            "--mode" => mode = it.next(),
-            "--menu" => menu = true,
+            "--context" => context = it.next(),
+            "--menu" => menu = it.next(),
+            "--logged-in" => logged_in = true,
             "--dark" => dark = true,
             "--size" => {
                 if let Some((w, h)) = it.next().as_deref().and_then(|s| s.split_once('x').map(|(w, h)| (w.to_string(), h.to_string()))) {
@@ -222,26 +223,26 @@ fn main() {
     let dir = std::env::temp_dir().join("deckcraft-agent-demo");
     std::fs::create_dir_all(&dir).unwrap();
     let (mut session, table) = demo(&dir);
-    if let Some(m) = mode.as_deref().and_then(deckcraft_agent::listener::Mode::parse) {
-        deckcraft_agent::listener::set_mode(m);
-    }
-    // The Connection status to show: the demo's agent calls count as "last call".
+    // What the setup looks like (never looked at for real from a screenshot run).
+    deckcraft_agent::context::set_setup(deckcraft_agent::context::Setup {
+        logged_in: Some(logged_in),
+        code_has_hub: Some(true),
+        desktop_has_hub: Some(true),
+    });
+    let ctx = match context.as_deref() {
+        Some("none") => json!({"kind": "none"}),
+        Some("web") => json!({"kind": "none", "web": true}),
+        Some("code") => json!({"kind": "code", "code": "session"}),
+        Some("folder") => json!({"kind": "code", "code": "folder", "folder": "/Users/anton/Clients/Acme board"}),
+        _ => json!({"kind": "cowork"}),
+    };
+    run(&mut session, "agent.contextMode", ctx);
+    deckcraft_agent::context::apply(&session);
     let uid = session.doc().unwrap().uid;
     match status.as_deref() {
-        Some("answering") => {
-            let id = run(&mut session, "agent.ping", json!({}))["id"].as_str().unwrap().to_string();
-            std::thread::sleep(std::time::Duration::from_millis(1200));
-            run(&mut session, "agent.answer", json!({"id": id, "text": "here", "actor": "agent"}));
-        }
         Some("checking") => {
             run(&mut session, "agent.ping", json!({}));
         }
-        Some("noanswer") => {
-            run(&mut session, "agent.ping", json!({}));
-            let p = deckcraft_agent::listener::last_ping().unwrap();
-            deckcraft_agent::listener::set_ping(Some(deckcraft_agent::listener::Ping { sent_at: p.sent_at.saturating_sub(95_000), ..p }));
-        }
-        Some("listener") => deckcraft_agent::listener::note_wait(),
         Some("listening") => {
             deckcraft_agent::listener::attach(uid, "Cowork · Acme board");
         }
@@ -317,9 +318,14 @@ fn main() {
             },
         );
     harness.run_steps(8);
-    if menu {
+    if let Some(m) = menu.as_deref() {
         use egui_kittest::kittest::Queryable;
-        let label = if deckcraft_agent::listener::mode() == deckcraft_agent::listener::Mode::Background { "Session" } else { "Copy" };
+        let label = match m {
+            "modes" => {
+                ["No context", "Claude Cowork", "Claude Code"].into_iter().find(|l| harness.query_by_label(l).is_some()).unwrap_or("Claude Cowork")
+            }
+            _ => "Get ready steps",
+        };
         harness.get_by_label(label).click();
         harness.run_steps(4);
     }

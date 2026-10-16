@@ -15,7 +15,7 @@
 #![forbid(unsafe_code)]
 
 mod checker;
-mod connection;
+mod context;
 mod overlay;
 mod pane;
 mod ribbon;
@@ -393,6 +393,8 @@ impl UiExtension for AgentUi {
             let _ = layer::get(d);
         }
         ribbon::keytip(self, app, ctx);
+        // The app's way of reaching the agent follows the active document's context.
+        deckcraft_agent::context::apply(&app.session);
         // The background agent (in that mode): started with the first question, fed each new one.
         deckcraft_agent::runner::tick(&mut app.session);
         // AItoCraft's registry: which decks are open, who listens (debounced; a heartbeat keeps

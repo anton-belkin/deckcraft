@@ -3,8 +3,8 @@
 //!
 //! - **Agent**: the pane, with readiness for sign-off under it (`Agreed 3 of 5 · 1 new`);
 //! - **Client data**: mark or unmark the selection;
-//! - **Connection**: Connect Cowork (Claude Desktop's local servers) with where it stands, whether
-//!   the server listens and an agent is active, Copy Claude Code command;
+//! - **Context**: what the agent knows (No context, Claude Cowork, Claude Code), whether it is
+//!   ready, and how to get it ready (`context.rs`);
 //! - **Links**: the deck's links to spreadsheet cells: how many are out of date, Check Now,
 //!   Update Stale.
 //!
@@ -39,6 +39,8 @@ pub(crate) struct State {
     alt_used: bool,
     armed_at: Option<f64>,
     swallow_until: Option<f64>,
+    /// The Context group's own state.
+    pub context: crate::context::State,
 }
 
 pub(crate) static STDIO_ENTRY: std::sync::OnceLock<Json> = std::sync::OnceLock::new();
@@ -240,8 +242,8 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui) {
         });
     });
 
-    // Connection: is anyone listening, the mode, what to copy.
-    crate::connection::group(st, app, ui);
+    // Context: what the agent knows, whether it is ready, how to get it ready.
+    crate::context::group(st, app, ui);
 
     // Links: the deck's links to spreadsheet cells.
     group(ui, |ui| {

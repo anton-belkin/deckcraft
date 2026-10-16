@@ -17,8 +17,9 @@ DeckCraft runs an MCP server itself: `http://127.0.0.1:7984/mcp`. If its tools (
 `curl -s http://127.0.0.1:7984/health` prints `ok`).
 
 In Claude Desktop or Cowork the same tools come from the local `deckcraft` server
-(`deckcraft --agent-stdio`); the user adds it with **Agent ▸ Connect Cowork** on DeckCraft's
-ribbon (if Claude is open, DeckCraft waits until it is quit with ⌘Q), then opens Claude. If a tool says "DeckCraft isn't open", ask the
+(`deckcraft --agent-stdio`), or through AItoCraft: the user picks **Claude Cowork** in the Context
+group of DeckCraft's Agent tab and follows **Get ready** (Install AItoCraft, Ask Cowork to
+collaborate), then opens Claude. If a tool says "DeckCraft isn't open", ask the
 user to open DeckCraft, then call it again.
 
 ## Through AItoCraft (several decks, several conversations)

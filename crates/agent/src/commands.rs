@@ -51,6 +51,7 @@ pub static SPECS: &[CommandSpec] = &[
     spec!(change "agent.attach", "Attach Agent", "{document?, label?} → {listener, document, title, app}: a conversation listens to this deck (AItoCraft)", has_doc, attach),
     spec!(change "agent.detach", "Detach Agent", "{listener}", has_doc, detach),
     spec!(query "agent.connection", "Agent Connection", "{} → mode, status (answering|checking|noAnswer|listener|nobody|off), the passive signs, the last check", has_doc, connection),
+    spec!(change "agent.contextMode", "Agent Context", "{kind?: none|cowork|code, code?: session|folder, folder?, web?: bool} → what the agent knows for this document (No context, Claude Cowork, Claude Code); a person's choice, saved in the file", has_doc, crate::context::command),
     spec!(change "agent.ping", "Check the Agent", "{} — asks the agent \"Is anyone there?\" (a connection check, never shown or saved) → {id}", has_doc, ping),
     // the agent's side
     spec!(query "agent.questions", "Agent Questions", "{status?: pending|working|answered|open|all (default all)} → questions with where they are", has_doc, questions),

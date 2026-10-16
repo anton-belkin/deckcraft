@@ -83,7 +83,7 @@ fn the_agent_tab_marks_the_selection_as_client_data() {
     let set = deckcraft_agent::privacy::private_shapes(&app.session);
     assert!(set.iter().any(|(_, x)| u64::from(x.0) == id), "marked from the ribbon");
     assert_eq!(app.ui.tab, "Agent", "the tab stays known");
-    h.get_by_label("Check");
+    h.get_by_label("Get ready");
     h.get_by_label("Unmark Client Data");
 }
 
@@ -112,26 +112,59 @@ fn keytip_a_opens_the_agent_tab_without_typing_into_the_slide() {
 }
 
 #[test]
-fn check_sends_a_ping_that_is_never_shown_as_a_question() {
+fn the_context_group_switches_modes_and_gets_ready_without_ping_wording() {
+    use deckcraft_agent::context::{Kind, Setup};
     let mut s = Session::with_new();
     s.execute("slide.new", &json!({"layout": "blank"})).unwrap();
     let mut h = harness(s);
+    // Installed already: the next step is asking the chat (a copy, nothing written anywhere).
+    deckcraft_agent::context::set_setup(Setup { logged_in: Some(false), code_has_hub: Some(true), desktop_has_hub: Some(true) });
+    let _ = h.state_mut().run("agent.contextMode", json!({"kind": "cowork"}));
     h.state_mut().ui.tab = "Agent".into();
     h.run_steps(2);
-    h.get_by_label("Nobody is listening for this document");
-    h.get_by_label("Check").click();
+    h.get_by_label("Claude Cowork");
+    h.get_by_label("Not ready");
+    assert!(h.query_by_label_contains("anyone there").is_none(), "the check is never shown");
+    assert!(h.query_by_label("Check").is_none() && h.query_by_label("Copy").is_none(), "the old pieces are gone");
+    h.get_by_label("Get ready").click();
     h.run_steps(2);
-    let app = h.state();
-    let l = deckcraft_agent::active_layer(&app.session).unwrap();
-    assert_eq!(l.questions.iter().filter(|q| q.is_ping()).count(), 1);
-    assert_eq!(l.asked().count(), 0, "not a question for the presenter");
-    h.get_by_label_contains("Checking");
-    // Copy holds what the mode needs: AItoCraft's phrase and setup.
-    h.get_by_label("Copy").click();
+    h.get_by_label("Waiting");
+    // The mode menu: three rows with what the agent knows.
+    h.get_by_label("Claude Cowork").click();
     h.run_steps(2);
-    h.get_by_label("Copy phrase for Claude");
-    h.get_by_label("Claude Code: add AItoCraft");
-    h.get_by_label("Install AItoCraft in Claude Desktop");
+    h.get_by_label_contains("Your Cowork chat, its project and memory.");
+    h.get_by_label_contains("Your Claude Code session or a project folder.");
+    h.get_by_label_contains("Only this document. Runs in the background.").click();
+    h.run_steps(2);
+    let kind = |h: &Harness<'static, SlideApp>| deckcraft_agent::active_layer(&h.state().session).unwrap().context.clone().unwrap();
+    assert_eq!(kind(&h).kind, Kind::None);
+    // Web, undoable like every layer action of the person's.
+    h.get_by_label("Web").click();
+    h.run_steps(2);
+    assert!(kind(&h).web);
+    let _ = h.state_mut().run("edit.undo", json!({}));
+    h.run_steps(1);
+    assert!(!kind(&h).web);
+    // Not logged in: Get ready's only step is logging in.
+    h.get_by_label("Get ready steps").click();
+    h.run_steps(2);
+    h.get_by_label("Log in to Claude");
+    h.key_press(egui::Key::Escape);
+    h.run_steps(1);
+    // Claude Code ▸ Project folder: Choose folder…, then the folder is shown.
+    let _ = h.state_mut().run("agent.contextMode", json!({"kind": "code"}));
+    h.run_steps(2);
+    h.get_by_label("Claude Code");
+    deckcraft_agent::context::set_folder_picker(Some(Box::new(|| Some("/tmp/Acme board".to_string()))));
+    h.get_by_label("Project folder").click();
+    h.run_steps(2);
+    h.get_by_label("Get ready").click();
+    h.run_steps(2);
+    deckcraft_agent::context::set_folder_picker(None);
+    assert_eq!(kind(&h).folder, "/tmp/Acme board");
+    assert_eq!(deckcraft_agent::listener::mode(), deckcraft_agent::listener::Mode::Background);
+    h.get_by_label_contains("Acme board");
+    let _ = h.state_mut().run("agent.contextMode", json!({"kind": "cowork"}));
 }
 
 /// A deck with a text box on slide 2, selected.

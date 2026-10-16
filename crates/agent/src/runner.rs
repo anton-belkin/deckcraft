@@ -146,6 +146,8 @@ struct Agent {
     shared: Arc<Mutex<Status>>,
     /// Started with `--resume`: a quick failure means the session isn't on this machine.
     resumed: bool,
+    /// The folder and the web permission it was started with: a context change restarts it.
+    settings: (std::path::PathBuf, bool),
 }
 
 #[derive(Default)]
@@ -183,7 +185,7 @@ pub fn status(uid: u64) -> Option<Status> {
 }
 
 /// The arguments the agent CLI is started with.
-pub fn args(c: &Config, session: &str, resume: bool, mcp_config: &str, skill: Option<&str>, name: &str) -> Vec<String> {
+pub fn args(c: &Config, session: &str, resume: bool, mcp_config: &str, skill: Option<&str>, name: &str, web: bool) -> Vec<String> {
     let mut a: Vec<String> =
         ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"].iter().map(|s| s.to_string()).collect();
     // Its name in the session lists (claude 2.1.301+).
@@ -191,6 +193,10 @@ pub fn args(c: &Config, session: &str, resume: bool, mcp_config: &str, skill: Op
     a.extend([if resume { "--resume" } else { "--session-id" }.to_string(), session.to_string()]);
     a.extend(["--mcp-config".to_string(), mcp_config.to_string(), "--strict-mcp-config".to_string()]);
     a.extend(["--allowedTools".to_string(), "mcp__deckcraft__*".to_string()]);
+    // No context ▸ Web.
+    if web {
+        a.extend(["--allowedTools".to_string(), "WebSearch".to_string(), "--allowedTools".to_string(), "WebFetch".to_string()]);
+    }
     if let Some(s) = skill {
         a.extend(["--append-system-prompt-file".to_string(), s.to_string()]);
     }
@@ -261,6 +267,12 @@ fn read_stderr(err: std::process::ChildStderr, shared: Arc<Mutex<Status>>) {
     }
 }
 
+/// Where the agent runs and whether it may use the web, from the deck's context: the project
+/// folder the person chose (Claude Code ▸ Project folder), else the neutral folder.
+fn settings(c: &Config, ctx: &crate::context::Context, deck: Option<&str>) -> (PathBuf, bool) {
+    (ctx.cwd().unwrap_or_else(|| session_folder(c, deck)), ctx.web())
+}
+
 /// A summary of the deck's history, to start a fresh session from.
 fn seed(l: &layer::Layer) -> String {
     let mut s = String::from("You are continuing work on this presentation in a fresh session. What happened so far, from the deck's history:\n");
@@ -296,10 +308,11 @@ pub fn start(s: &Session) -> std::result::Result<Status, String> {
     let l = layer::get(d);
     let fresh = agents().as_ref().is_some_and(|a| a.fresh.contains(&uid));
     let (session, resume) = if l.agent_session.is_empty() || fresh { (new_uuid(uid), false) } else { (l.agent_session.clone(), true) };
-    let cwd = session_folder(&c, d.path.as_deref());
+    let ctx = crate::context::of(d);
+    let cwd = settings(&c, &ctx, d.path.as_deref()).0;
     let _ = std::fs::create_dir_all(&cwd);
     let mut child = Command::new(&c.command)
-        .args(args(&c, &session, resume, &mcp, skill.as_deref(), &format!("DeckCraft · {}", crate::documents::title(d))))
+        .args(args(&c, &session, resume, &mcp, skill.as_deref(), &format!("DeckCraft · {}", crate::documents::title(d)), ctx.web()))
         .current_dir(&cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -317,7 +330,7 @@ pub fn start(s: &Session) -> std::result::Result<Status, String> {
         let sh = shared.clone();
         let _ = std::thread::Builder::new().name("agent-stderr".into()).spawn(move || read_stderr(stderr, sh));
     }
-    let mut agent = Agent { child, stdin, sent: HashSet::new(), shared, resumed: resume };
+    let mut agent = Agent { child, stdin, sent: HashSet::new(), shared, resumed: resume, settings: settings(&c, &ctx, d.path.as_deref()) };
     // A fresh session gets the history, when there is one.
     let mut first = vec![];
     if !resume && !l.log.is_empty() {
@@ -417,6 +430,11 @@ pub fn tick(s: &mut Session) {
     }
     let Some(d) = s.active() else { return };
     let uid = d.uid;
+    // The context changed (folder, web): the next question starts it again with the new one.
+    let now_settings = settings(&config(), &crate::context::of(d), d.path.as_deref());
+    if agents().as_ref().and_then(|a| a.by_doc.get(&uid)).is_some_and(|x| x.settings != now_settings) {
+        stop(uid);
+    }
     // A finished process: keep its status; a resume that failed starts fresh next time.
     let exited = {
         let mut g = agents();

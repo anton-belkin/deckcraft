@@ -752,7 +752,7 @@ fn the_background_agent_is_started_as_specified_and_a_failure_is_shown() {
     let _g = MODE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let c =
         crate::runner::Config { data_dir: Some(std::env::temp_dir().join(format!("deckcraft-runner-{}", std::process::id()))), ..Default::default() };
-    let a = crate::runner::args(&c, "S1", false, "/m.json", Some("/skill.md"), "DeckCraft · board.pptx");
+    let a = crate::runner::args(&c, "S1", false, "/m.json", Some("/skill.md"), "DeckCraft · board.pptx", false);
     let joined = a.join(" ");
     for want in [
         "--name DeckCraft · board.pptx",
@@ -768,7 +768,7 @@ fn the_background_agent_is_started_as_specified_and_a_failure_is_shown() {
         assert!(joined.contains(want), "{want} in {joined}");
     }
     assert!(!joined.contains("--bare"));
-    assert!(crate::runner::args(&c, "S1", true, "/m.json", None, "x").join(" ").contains("--resume S1"));
+    assert!(crate::runner::args(&c, "S1", true, "/m.json", None, "x", false).join(" ").contains("--resume S1"));
     let neutral = crate::runner::session_folder(&c, Some("/Users/x/Clients/Acme/board.pptx"));
     assert!(neutral.ends_with("agent-sessions"), "{neutral:?}");
     let opted = crate::runner::Config { use_deck_folder: true, ..c.clone() };
@@ -1247,4 +1247,58 @@ fn a_sent_copy_keeps_statuses_and_notes_but_not_the_discussion() {
     assert!(l.log.iter().all(|e| !e.text.contains("audited?")));
     let l = read(&run(&mut s, "agent.copyToSend", json!({"discussion": true})));
     assert_eq!(l.questions.len(), 1, "included when asked");
+}
+
+// ---------------------------------------------------------------- the Context group
+
+#[test]
+fn the_context_is_per_document_saved_in_the_file_and_undoable() {
+    use crate::context::{self, Kind};
+    let _g = MODE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    crate::listener::set_mode(crate::listener::Mode::Desktop);
+    let (mut s, _, _) = deck();
+    // Nothing chosen yet: the last mode used in the app.
+    let c = run(&mut s, "agent.contextMode", json!({}));
+    assert_eq!(c["kind"], "cowork");
+    // A person's choice; the agent can't make it.
+    assert!(s.execute("agent.contextMode", &json!({"kind": "none", "actor": "agent"})).is_err());
+    run(&mut s, "agent.contextMode", json!({"kind": "code", "code": "folder", "folder": "/tmp/project"}));
+    assert_eq!(crate::listener::mode(), crate::listener::Mode::Background, "a project folder runs the background client");
+    let l = crate::active_layer(&s).unwrap();
+    let saved = l.context.clone().unwrap();
+    assert_eq!((saved.kind, saved.folder.as_str()), (Kind::Code, "/tmp/project"));
+    assert_eq!(saved.cwd(), Some(std::path::PathBuf::from("/tmp/project")));
+    // In the file.
+    let mut doc = (*s.doc().unwrap().doc).clone();
+    layer::write_into(&mut doc, &l);
+    assert_eq!(layer::read_from(&doc).context, Some(saved.clone()));
+    // Not in a copy that is sent: the folder is the sender's.
+    assert!(layer::for_sending(&l, true).context.is_none());
+    // Undo takes the choice back.
+    run(&mut s, "agent.contextMode", json!({"kind": "none", "web": true}));
+    assert!(crate::active_layer(&s).unwrap().context.clone().unwrap().web());
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(crate::active_layer(&s).unwrap().context, Some(saved));
+    run(&mut s, "edit.redo", json!({}));
+    assert!(crate::active_layer(&s).unwrap().context.clone().unwrap().web());
+    // A new document starts with the last mode used (not its folder); the app follows the active one.
+    run(&mut s, "file.new", json!({}));
+    let fresh = context::of(s.active().unwrap());
+    assert_eq!((fresh.kind, fresh.folder.as_str()), (Kind::None, ""));
+    crate::listener::set_mode(crate::listener::Mode::Channel);
+    context::apply(&s);
+    assert_eq!(crate::listener::mode(), crate::listener::Mode::Background);
+    crate::listener::set_mode(crate::listener::Mode::Desktop);
+}
+
+#[test]
+fn web_lets_the_background_client_search_and_fetch() {
+    let c = crate::runner::Config::default();
+    let with = crate::runner::args(&c, "S1", false, "/m.json", None, "x", true).join(" ");
+    assert!(with.contains("--allowedTools WebSearch") && with.contains("--allowedTools WebFetch"), "{with}");
+    let without = crate::runner::args(&c, "S1", false, "/m.json", None, "x", false).join(" ");
+    assert!(!without.contains("WebSearch"));
+    // Web belongs to No context only.
+    let ctx = crate::context::Context { kind: crate::context::Kind::Cowork, web: true, ..Default::default() };
+    assert!(!ctx.web());
 }

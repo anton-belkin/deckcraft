@@ -23,6 +23,7 @@ pub mod anchor;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod channel;
 pub mod commands;
+pub mod context;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cowork;
 pub mod documents;
@@ -202,7 +203,7 @@ impl Observer for Keeper {
         }
         // Mode Off: the agent's calls are refused (the person's still work).
         if refused_when_off(listener::mode(), params) {
-            return Some(Err(EngineError::Other("the agent connection is off in DeckCraft (Agent tab ▸ Connection ▸ Mode)".into())));
+            return Some(Err(EngineError::Other("the agent connection is off in DeckCraft (started with --agent-mode off)".into())));
         }
         if id != "edit.paste" {
             return None;

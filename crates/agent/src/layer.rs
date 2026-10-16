@@ -301,6 +301,10 @@ pub struct Layer {
     /// The background agent's session id (`claude --resume`), so reopening the deck continues it.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub agent_session: String,
+    /// What the agent knows for this document (the Agent tab's Context group); none yet: the
+    /// last mode used in the app.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<crate::context::Context>,
     /// Bumped on every change (not meaningful in the file; lets views cache).
     #[serde(skip)]
     pub revision: u64,
@@ -331,6 +335,7 @@ impl Layer {
             && self.questions.iter().all(Question::is_ping)
             && self.notes.is_empty()
             && self.topics.is_empty()
+            && self.context.is_none()
     }
 
     /// The people's questions (connection checks left out).
@@ -558,6 +563,9 @@ pub fn for_sending(l: &Layer, discussion: bool) -> Layer {
     let mut out = l.clone();
     out.topics.retain(|t| !t.hidden);
     out.notes.retain(|n| !n.deleted);
+    // The sender's context (a local folder, their way of working) stays with them: the reader's
+    // app starts the deck in its own last mode.
+    out.context = None;
     if !discussion {
         out.questions.clear();
         out.log.retain(|e| e.command != "agent.answer");

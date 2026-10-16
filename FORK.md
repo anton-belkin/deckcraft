@@ -113,30 +113,43 @@ upstream. Each one accepted upstream removes its lines from the patch.
   `.pptx` on disk hold real text (same as GridCraft; the "safe file" mode is the next step).
 - **The Agent tab holds what isn't about one piece of content**, in four groups named the same in
   GridCraft, WordCraft and DeckCraft: *Agent* (the pane, with what is waiting), *Client data*
-  (mark/unmark the selection), *Connection* and *Links* (out-of-date count, Check Now, Update
+  (mark/unmark the selection), *Context* and *Links* (out-of-date count, Check Now, Update
   Stale). The pane keeps what is about the content, in three tabs: **Selection** (what is selected,
   the topics touching it as cards, the question box at the very bottom), **Overview** (readiness
   "Agreed 10 of 15 · 2 revise · 3 open" on top, filters, every topic in deck order, the linked
   cells, a copy to send) and **History**. Under the Agent button the readiness line (`Agreed 3 of 5
   · 1 new`); links `up to date` / `1 out of date`. The floating status button shows only while the
   ribbon is collapsed.
-- **Connection: three things only** (the shared spec). *Status*, with **Check** next to it, which
-  asks the agent "Is anyone there?" (`agent.ping`): a system question (`kind: "ping"`) that goes
-  out through every path a question goes (list_questions, wait_for_questions, `/events`, the
-  channel, the background agent) but is never shown, gets no badge and is never saved; any answer
-  marks it answered. Green "Agent answering · checked 12 s ago" after an answer; amber "Listener
-  connected · not checked" on passive signs only (an `/events` stream, a channel stream, a
-  `wait_for_questions` open now or in the last minute, the background agent running); grey "Nobody
-  is listening"; red "No answer to check" a minute after an unanswered check. The sub-line says
-  which signs and when the agent last called. *Mode*, a list with one line of explanation each:
-  I connect my agent (MCP: Claude Code, Cowork, any client), Send to my Claude Code session
-  (Channels), Background agent (DeckCraft runs claude itself), Off (the agent's calls are refused).
-  *Copy ▾*, whose items depend on the mode, each copying one thing: Claude Code: add MCP server,
-  Monitor command, Connect Cowork… / 1. Add channel server, 2. Start Claude Code with the channel /
-  for the background agent, Open session in Claude Desktop and New session instead. URL, ports,
-  the session and the last error are under Details. The mode is the app's (remembered in
-  `<settings>/agent/mode`; `--agent-mode` overrides it), never the file's: a deck someone sends must not start an
-  agent that spends the reader's money.
+- **Context: what does the agent know** (the brief shared with GridCraft and WordCraft,
+  `crates/agent-ui/src/context.rs`, `crates/agent/src/context.rs`). On the left a large button
+  with the document's mode and a status dot; its menu has three rows, each with the name, one line
+  and chips: **No context** "Only this document. Runs in the background." [Document] (the
+  background client in its neutral, empty folder), **Claude Cowork** "Your Cowork chat, its project
+  and memory." [Document][Your chat] (AItoCraft and the chat's `wait_for_questions` loop),
+  **Claude Code** "Your Claude Code session or a project folder." [Document][Project folder]. On
+  the right, by mode: No context has **Web** (the background client may also use WebSearch and
+  WebFetch); Claude Code has **My session | Project folder** (the session gets questions through
+  the AItoCraft channel; a project folder is the background client's cwd, so it sees that folder's
+  CLAUDE.md, memory and files). Then the **Ready** lamp: green Ready (a listener was seen recently
+  for this document, or the background client is usable: `claude auth status` logged in), amber
+  Waiting (after a Get ready step, until a listener attaches), grey Not ready. **Get ready ▾**:
+  its main click runs the next step not yet done, its list ticks the done ones. No context: Log in
+  to Claude (a terminal with `claude auth login`), shown only while the CLI isn't logged in. Claude
+  Cowork: Install AItoCraft (`aitocraft --install-desktop`), Ask Cowork to collaborate (copies the
+  phrase). Claude Code ▸ My session: Install AItoCraft (`claude mcp add --scope user aitocraft --
+  <hub>`, done when `claude mcp get aitocraft` succeeds), Ask my session to collaborate (copies the
+  command that starts claude with the aitocraft channel). Project folder: Choose folder…. The app
+  checks readiness by itself (the setup every 30 s, every 5 s while waiting) and sends a quiet
+  check (`agent.ping`, a system question never shown, never saved) when a listener shows passive
+  signs but hasn't answered; no ping wording appears in the UI. **The mode is the document's**:
+  saved in its layer (`context`, `agent.contextMode`, an undo step like every layer action of the
+  person's), dropped from a copy that is sent; a new document starts with the last mode used in
+  the app (remembered in `<settings>/agent/mode`; `--agent-mode` sets it at start). The app's
+  listener mode follows the active document. The background client restarts when its folder or
+  Web changes. The old Status line, Check, Mode list and Copy menu are gone; the direct connection
+  (HTTP, the monitor command, DeckCraft's own channel server, Connect Cowork with DeckCraft's own
+  entry) and the background session (Open in Claude Desktop, New session, the resume command) are
+  under Details at the bottom of the mode menu.
 - **AItoCraft** (`~/aitocraft/PROTOCOL.md`): one MCP hub, configured once in Claude Desktop /
   Cowork and Claude Code, serves every open document of every Craft app; the person picks the
   context by starting the conversation where the work belongs and saying which deck. DeckCraft's
@@ -148,19 +161,13 @@ upstream. Each one accepted upstream removes its lines from the patch.
   unknown id is "document … is not open in DeckCraft"). `list_documents`, `attach {document,
   label}` → a listener, `detach`; `listener` on the question tools refreshes it (dropped after
   90 s); questions carry `document` and `documentTitle`; `GET /events?document=<id>` follows one
-  deck; a check goes to the active deck's listeners and records who answered. The Connection
-  status is per deck: "Listening: Cowork · Acme · 20 s ago", the check, or "Nobody is listening for
-  this document" (questions still queue). A check's id is `ping<ms>`; unanswered, it drops out of
-  `agent.questions` after 60 s (the status still says "No answer to check"). `wait_for_questions`
+  deck; a check goes to the active deck's listeners and records who answered. The Ready lamp is
+  per deck. A check's id is `ping<ms>`; unanswered, it drops out of `agent.questions` after 60 s. `wait_for_questions`
   sends `waiting: true` (a listener for 60 s), the app's own polls (`/events`, the channel, the
   runner) `poll: true`; neither counts as the agent's last call. In Off, every agent-side command
-  is refused with "the agent connection is off in DeckCraft (Agent tab ▸ Connection ▸ Mode)";
-  `initialize` and `tools/list` still answer. Modes, in order: Claude Desktop / Cowork (AItoCraft),
-  My Claude Code session (AItoCraft channel), Background agent, Off. Copy: Copy phrase for Claude,
-  Install AItoCraft in Claude Desktop (`aitocraft --install-desktop`, when the binary is found:
-  `AITOCRAFT_BIN`, the PATH, `~/aitocraft/target/release`), Claude Code: add AItoCraft (and, in
-  the channel mode, start with the channel). The direct connection (`--agent-stdio`, HTTP, the
-  monitor command, Connect Cowork with DeckCraft's own entry) stays under Details.
+  is refused with "the agent connection is off in DeckCraft (started with --agent-mode off)";
+  `initialize` and `tools/list` still answer. The hub binary is found at `AITOCRAFT_BIN`, on the
+  PATH or in `~/aitocraft/target/release`.
 - **Send to my Claude Code session** (Claude Code Channels, research preview): the server declares
   `experimental["claude/channel"]` and, in that mode, streams each new question on `GET /mcp`
   (SSE) as `notifications/claude/channel`. Claude Code spawns channel servers over stdio, so
@@ -230,8 +237,9 @@ The agent server starts with the app (and the control channel on 7985 with it). 
 claude mcp add --transport http deckcraft http://127.0.0.1:7984/mcp
 ```
 
-and give it the skill in `agent-layer/skill/`. **Claude Desktop / Cowork**: Agent ▸ Connect Cowork
-(or add the entry from `agent-layer/claude_desktop_config.example.json` by hand), then quit Claude
+and give it the skill in `agent-layer/skill/`. **Claude Desktop / Cowork**: Agent ▸ Context ▸ Claude
+Cowork ▸ Get ready; for DeckCraft's own entry, Details ▸ Direct connection ▸ Connect Cowork (or
+add the entry from `agent-layer/claude_desktop_config.example.json` by hand), then quit Claude
 with ⌘Q and reopen it. Offscreen render with a demo deck (topics in every status, a removed
 place, prepared answers, client data, a stale linked table):
 
@@ -242,6 +250,7 @@ cargo run -p deckcraft-agent-ui --example agent_snapshot -- --pane topic:8 --sli
 cargo run -p deckcraft-agent-ui --example agent_snapshot -- --hover-link out.png
 cargo run -p deckcraft-agent-ui --example agent_snapshot -- --presenter out.png
 cargo run -p deckcraft-agent-ui --example agent_snapshot -- --agent-tab --pane selection out.png
+cargo run -p deckcraft-agent-ui --example agent_snapshot -- --agent-tab --context none|web|cowork|code|folder [--logged-in] [--status listening] [--menu steps|modes] out.png
 ```
 
 ## Keeping the fork alive

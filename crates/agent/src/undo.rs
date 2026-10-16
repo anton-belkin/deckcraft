@@ -62,6 +62,11 @@ pub enum Op {
     Reject {
         place: String,
     },
+    /// What the agent knows for the document (mode, web, folder).
+    Context {
+        before: Option<crate::context::Context>,
+        after: Option<crate::context::Context>,
+    },
 }
 
 impl Op {
@@ -78,6 +83,7 @@ impl Op {
             Op::RemoveNote { .. } => "Remove Note",
             Op::AddNote { .. } => "Add Note",
             Op::Reject { .. } => "Reject Place",
+            Op::Context { .. } => "Agent Context",
         }
     }
 
@@ -120,6 +126,7 @@ impl Op {
             Op::RemoveNote { note } => removed(l, note, false),
             Op::AddNote { note } => removed(l, note, true),
             Op::Reject { place } => Op::places(l, std::slice::from_ref(place), false),
+            Op::Context { before, .. } => l.context = before.clone(),
         }
     }
 
@@ -148,6 +155,7 @@ impl Op {
             Op::RemoveNote { note } => removed(l, note, true),
             Op::AddNote { note } => removed(l, note, false),
             Op::Reject { place } => Op::places(l, std::slice::from_ref(place), true),
+            Op::Context { after, .. } => l.context = after.clone(),
         }
     }
 }
