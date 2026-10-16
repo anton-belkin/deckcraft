@@ -657,6 +657,8 @@ static MODE_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn a_ping_goes_out_like_a_question_but_is_never_shown_or_saved() {
+    // The last check is app-wide: tests that make one run one at a time.
+    let _g = MODE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let (mut s, _, _) = deck();
     let uid = s.doc().unwrap().uid;
     assert!(s.execute("agent.ping", &json!({"actor": "agent"})).is_err(), "the agent doesn't ping itself");
@@ -679,7 +681,7 @@ fn a_ping_goes_out_like_a_question_but_is_never_shown_or_saved() {
     assert_eq!(run(&mut s, "agent.connection", json!({}))["status"], "answering");
     assert!(crate::active_layer(&s).unwrap().log.iter().all(|e| !e.text.contains("Is anyone there")), "no history entry");
     // A ping nobody answers within a minute.
-    crate::listener::set_ping(Some(crate::listener::Ping { id: "pingX".into(), uid, sent_at: 1, answered_at: None }));
+    crate::listener::set_ping(Some(crate::listener::Ping { id: "pingX".into(), uid, sent_at: 1, answered_at: None, answered_by: String::new() }));
     assert!(matches!(crate::listener::health(Some(uid)), crate::listener::Health::NoAnswer { .. }));
 }
 
@@ -697,7 +699,7 @@ fn mode_off_refuses_the_agent_only() {
     use crate::listener::Mode;
     assert!(crate::refused_when_off(Mode::Off, &json!({"actor": "agent"})));
     assert!(!crate::refused_when_off(Mode::Off, &json!({})));
-    assert!(!crate::refused_when_off(Mode::Connect, &json!({"actor": "agent"})));
+    assert!(!crate::refused_when_off(Mode::Desktop, &json!({"actor": "agent"})));
     for m in Mode::ALL {
         assert_eq!(Mode::parse(m.id()), Some(m));
         assert!(!m.label().is_empty() && !m.explanation().is_empty());
@@ -712,7 +714,7 @@ fn the_channel_stream_carries_questions_and_pings_in_channel_mode() {
     run(&mut s, "agent.ping", json!({}));
     let port = crate::server::start(0, control_server(s)).unwrap();
     // Not in the channel mode: no stream.
-    crate::listener::set_mode(crate::listener::Mode::Connect);
+    crate::listener::set_mode(crate::listener::Mode::Desktop);
     assert!(http(port, "GET", "/mcp", "").starts_with("HTTP/1.1 405"));
     crate::listener::set_mode(crate::listener::Mode::Channel);
     let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
@@ -729,7 +731,7 @@ fn the_channel_stream_carries_questions_and_pings_in_channel_mode() {
         }
     }
     assert!(crate::server::status().channels >= 1, "the stream counts as a listener");
-    crate::listener::set_mode(crate::listener::Mode::Connect);
+    crate::listener::set_mode(crate::listener::Mode::Desktop);
     assert!(got.iter().all(|e| e["method"] == "notifications/claude/channel"));
     let kinds: Vec<&str> = got.iter().map(|e| e["params"]["meta"]["kind"].as_str().unwrap()).collect();
     assert!(kinds.contains(&"question") && kinds.contains(&"ping"), "{got:?}");
@@ -763,6 +765,10 @@ fn the_background_agent_is_started_as_specified_and_a_failure_is_shown() {
     }
     assert!(!joined.contains("--bare"));
     assert!(crate::runner::args(&c, "S1", true, "/m.json", None).join(" ").contains("--resume S1"));
+    let neutral = crate::runner::session_folder(&c, Some("/Users/x/Clients/Acme/board.pptx"));
+    assert!(neutral.ends_with("agent-sessions"), "{neutral:?}");
+    let opted = crate::runner::Config { use_deck_folder: true, ..c.clone() };
+    assert_eq!(crate::runner::session_folder(&opted, Some("/Users/x/Clients/Acme/board.pptx")), std::path::PathBuf::from("/Users/x/Clients/Acme"));
     let u = crate::runner::new_uuid(7);
     assert_eq!(u.len(), 36);
     assert_eq!(u.chars().nth(14), Some('4'));
@@ -773,10 +779,124 @@ fn the_background_agent_is_started_as_specified_and_a_failure_is_shown() {
     assert!(s.execute("agent.agentMode", &json!({"mode": "background", "actor": "agent"})).is_err());
     run(&mut s, "agent.agentMode", json!({"mode": "background"}));
     crate::runner::tick(&mut s);
-    crate::listener::set_mode(crate::listener::Mode::Connect);
+    crate::listener::set_mode(crate::listener::Mode::Desktop);
     let st = run(&mut s, "agent.agentStatus", json!({}));
     assert_eq!(st["running"], false);
     assert!(st["lastError"].as_str().unwrap().contains("deckcraft-test-no-agent"), "{st}");
     let ping = json!({"id": "ping9", "kind": "ping"});
     assert!(crate::runner::question_text(&s, &ping).contains("\"here\""));
+}
+
+// ---------------------------------------------------------------- AItoCraft
+
+/// Two decks: A (with a question, not active) and B (active).
+fn two_decks() -> (Session, String, String) {
+    setup();
+    let mut s = Session::with_new();
+    run(&mut s, "slide.new", json!({"layout": "titleOnly", "title": "Deck A"}));
+    let a = crate::documents::id(s.doc().unwrap().uid);
+    run(&mut s, "agent.ask", json!({"text": "Question in A", "slide": 2}));
+    run(&mut s, "file.new", json!({}));
+    run(&mut s, "agent.ask", json!({"text": "Question in B", "slide": 1}));
+    let b = crate::documents::id(s.doc().unwrap().uid);
+    (s, a, b)
+}
+
+#[test]
+fn every_tool_works_on_a_deck_that_isnt_active() {
+    let (s, a, b) = two_decks();
+    let mut m = Local(s);
+    let docs = tool(&mut m, "list_documents", json!({}));
+    assert_eq!(docs.as_array().unwrap().len(), 2);
+    assert!(docs.as_array().unwrap().iter().any(|d| d["id"] == b.as_str() && d["frontmost"] == true));
+    let att = tool(&mut m, "attach", json!({"document": a, "label": "Cowork · Acme"}));
+    assert_eq!(att["document"], a.as_str());
+    assert_eq!(att["app"], "deckcraft");
+    let listener = att["listener"].as_str().unwrap().to_string();
+    let qs = tool(&mut m, "wait_for_questions", json!({"document": a, "listener": listener, "timeout_seconds": 0}));
+    let qs = qs.as_array().unwrap();
+    assert_eq!(qs.len(), 1, "only A's questions");
+    assert_eq!(qs[0]["text"], "Question in A");
+    assert_eq!(qs[0]["document"], a.as_str());
+    assert!(qs[0]["documentTitle"].is_string());
+    // The active deck stays B.
+    assert_eq!(crate::documents::id(m.0.doc().unwrap().uid), b);
+    // The listener shows on A, and A's status says who listens.
+    let docs = tool(&mut m, "list_documents", json!({}));
+    let da = docs.as_array().unwrap().iter().find(|d| d["id"] == a.as_str()).unwrap();
+    assert_eq!(da["listeners"][0]["label"], "Cowork · Acme");
+    let uid_a = crate::documents::parse(&a).unwrap();
+    assert!(matches!(crate::listener::health(Some(uid_a)), crate::listener::Health::Listening { .. }));
+    // A change on A through run_command lands on A, with its undo step there.
+    let undo_a = m.0.documents().iter().find(|d| d.uid == uid_a).unwrap().history.undo.len();
+    tool(&mut m, "run_command", json!({"document": a, "command": "slide.new", "params": {"layout": "blank"}, "reason": "test"}));
+    let da = m.0.documents().iter().find(|d| d.uid == uid_a).unwrap();
+    assert_eq!(da.doc.slides.len(), 3);
+    assert_eq!(da.history.undo.len(), undo_a + 1);
+    assert_eq!(crate::documents::id(m.0.doc().unwrap().uid), b);
+    // An unknown deck is an error that says so.
+    let r = crate::mcp::handle(
+        &mut m,
+        &json!({"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "get_context", "arguments": {"document": "deckcraft:1:2"}}}),
+    )
+    .unwrap();
+    assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("document deckcraft:1:2 is not open in DeckCraft"), "{r}");
+    tool(&mut m, "detach", json!({"listener": listener}));
+    assert!(crate::listener::listeners(uid_a).is_empty());
+}
+
+#[test]
+fn a_ping_answer_says_which_listener_answered() {
+    let _g = MODE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let (mut s, _, b) = two_decks();
+    let uid = crate::documents::parse(&b).unwrap();
+    let l = crate::listener::attach(uid, "Claude Code · deckcraft");
+    let id = run(&mut s, "agent.ping", json!({}))["id"].as_str().unwrap().to_string();
+    run(&mut s, "agent.answer", json!({"id": id, "text": "here", "actor": "agent", "listener": l.id}));
+    match crate::listener::health(Some(uid)) {
+        crate::listener::Health::Answering { by, .. } => assert_eq!(by, "Claude Code · deckcraft"),
+        other => panic!("{other:?}"),
+    }
+    crate::listener::set_ping(None);
+}
+
+#[test]
+fn events_can_follow_one_deck() {
+    let (s, a, _) = two_decks();
+    let port = crate::server::start(0, control_server(s)).unwrap();
+    let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    write!(c, "GET /events?document={} HTTP/1.1\r\nHost: localhost\r\n\r\n", a.replace(':', "%3A")).unwrap();
+    let mut r = BufReader::new(c);
+    let line = loop {
+        let mut l = String::new();
+        r.read_line(&mut l).unwrap();
+        if l.trim_start().starts_with('{') {
+            break l;
+        }
+    };
+    let e: Json = serde_json::from_str(&line).unwrap();
+    assert_eq!(e["question"], "Question in A");
+    assert_eq!(e["document"], a.as_str());
+}
+
+#[test]
+fn the_registry_file_lists_the_decks_and_goes_away() {
+    let (s, a, b) = two_decks();
+    let dir = temp_dir("registry");
+    crate::registry::set_dir(Some(dir.clone()));
+    crate::registry::publish("http://127.0.0.1:7984/mcp", crate::documents::list(&s));
+    crate::registry::flush(true);
+    let f = crate::registry::file().unwrap();
+    assert_eq!(f.file_name().unwrap().to_string_lossy(), format!("deckcraft-{}.json", std::process::id()));
+    let v: Json = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
+    assert_eq!(v["protocol"], "aitocraft/1");
+    assert_eq!(v["app"], "deckcraft");
+    assert_eq!(v["mcp"], "http://127.0.0.1:7984/mcp");
+    let ids: Vec<&str> = v["documents"].as_array().unwrap().iter().map(|d| d["id"].as_str().unwrap()).collect();
+    assert!(ids.contains(&a.as_str()) && ids.contains(&b.as_str()));
+    assert!(v["documents"].as_array().unwrap().iter().all(|d| d.get("openQuestions").is_some() && d.get("listeners").is_some()));
+    assert!(!v.to_string().contains("Question in A"), "no content in the registry");
+    crate::registry::remove();
+    assert!(!f.exists());
+    crate::registry::set_dir(None);
 }

@@ -8,7 +8,8 @@ use serde_json::json;
 
 fn harness(s: Session) -> Harness<'static, SlideApp> {
     crate::install();
-    // Never a real agent, never the user's real Claude Desktop config.
+    // Never a real agent, never the user's real Claude Desktop config or AItoCraft registry.
+    deckcraft_agent::registry::set_dir(Some(std::env::temp_dir().join(format!("deckcraft-ui-tests-{}/agents", std::process::id()))));
     deckcraft_agent::runner::set_config(deckcraft_agent::runner::Config {
         command: "deckcraft-test-no-agent".into(),
         data_dir: Some(std::env::temp_dir().join(format!("deckcraft-ui-tests-{}/agent", std::process::id()))),
@@ -117,7 +118,7 @@ fn check_sends_a_ping_that_is_never_shown_as_a_question() {
     let mut h = harness(s);
     h.state_mut().ui.tab = "Agent".into();
     h.run_steps(2);
-    h.get_by_label("Nobody is listening");
+    h.get_by_label("Nobody is listening for this document");
     h.get_by_label("Check").click();
     h.run_steps(2);
     let app = h.state();
@@ -125,9 +126,10 @@ fn check_sends_a_ping_that_is_never_shown_as_a_question() {
     assert_eq!(l.questions.iter().filter(|q| q.is_ping()).count(), 1);
     assert_eq!(l.asked().count(), 0, "not a question for the presenter");
     h.get_by_label_contains("Checking");
-    // Copy holds the commands of the mode; Connect Cowork is in it.
+    // Copy holds what the mode needs: AItoCraft's phrase and setup.
     h.get_by_label("Copy").click();
     h.run_steps(2);
-    h.get_by_label("Claude Code: add MCP server");
-    h.get_by_label_contains("Connect Cowork");
+    h.get_by_label("Copy phrase for Claude");
+    h.get_by_label("Claude Code: add AItoCraft");
+    h.get_by_label("Install AItoCraft in Claude Desktop");
 }

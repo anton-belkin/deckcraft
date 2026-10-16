@@ -36,6 +36,9 @@ pub static SPECS: &[CommandSpec] = &[
     spec!(change "agent.seen", "Mark Answer Read", "{id}", has_doc, seen),
     spec!(change "agent.private", "Mark as Client Data", "{slide?, shape?|id?, words?, on?: bool (default true)} — the agent sees pseudonyms there and can't change it", has_slide, private),
     spec!(change "agent.removeNote", "Remove Agent Note", "{id}", has_doc, remove_note),
+    spec!(query "agent.documents", "Open Decks", "{} → the open decks as AItoCraft lists them: id, title, path, frontmost, open questions, listeners", has_doc, documents_cmd),
+    spec!(change "agent.attach", "Attach Agent", "{document?, label?} → {listener, document, title, app}: a conversation listens to this deck (AItoCraft)", has_doc, attach),
+    spec!(change "agent.detach", "Detach Agent", "{listener}", has_doc, detach),
     spec!(query "agent.connection", "Agent Connection", "{} → mode, status (answering|checking|noAnswer|listener|nobody|off), the passive signs, the last check", has_doc, connection),
     spec!(change "agent.ping", "Check the Agent", "{} — asks the agent \"Is anyone there?\" (a connection check, never shown or saved) → {id}", has_doc, ping),
     // the agent's side
@@ -312,6 +315,10 @@ fn status_matches(q: &Question, want: &str) -> bool {
 pub fn question_json(s: &Session, l: &Layer, m: &Masker, q: &Question) -> Json {
     let mut o = serde_json::to_value(q).unwrap_or(Json::Null);
     o["text"] = json!(m.text(&q.text));
+    if let Ok(d) = s.doc() {
+        o["document"] = json!(crate::documents::id(d.uid));
+        o["documentTitle"] = json!(m.text(&crate::documents::title(d)));
+    }
     if q.is_ping() {
         o["where"] = Json::Null;
         o["hint"] = json!("a connection check: answer it at once with \"here\" (answer_question), don't investigate");
@@ -352,7 +359,7 @@ fn answer(s: &mut Session, p: &Json) -> Result<Json> {
     let ping = layer::get(s.doc()?).questions.iter().any(|q| q.id == id && q.is_ping());
     if ping {
         // A connection check: noted, and gone (it was never a question for the presenter).
-        crate::listener::answered(&id);
+        crate::listener::answered(&id, str_p(p, "listener"));
         layer::update(s.doc()?, |l| l.questions.retain(|q| q.id != id));
         return Ok(json!({"id": id, "ping": true}));
     }
@@ -822,7 +829,7 @@ fn ping(s: &mut Session, p: &Json) -> Result<Json> {
         });
         id
     });
-    crate::listener::set_ping(Some(crate::listener::Ping { id: id.clone(), uid, sent_at: now_ms(), answered_at: None }));
+    crate::listener::set_ping(Some(crate::listener::Ping { id: id.clone(), uid, sent_at: now_ms(), answered_at: None, answered_by: String::new() }));
     Ok(json!({"id": id}))
 }
 
@@ -833,7 +840,8 @@ fn connection(s: &mut Session, _p: &Json) -> Result<Json> {
     let sig = listener::signals(Some(uid));
     let (status, extra) = match listener::health(Some(uid)) {
         _ if mode == Mode::Off => ("off", json!({})),
-        Health::Answering { at, secs } => ("answering", json!({"answeredAt": at, "answeredInSeconds": secs})),
+        Health::Answering { at, secs, by } => ("answering", json!({"answeredAt": at, "answeredInSeconds": secs, "answeredBy": by})),
+        Health::Listening { label, last_seen, more } => ("listening", json!({"label": label, "lastSeen": last_seen, "others": more})),
         Health::Checking { since } => ("checking", json!({"sentAt": since})),
         Health::NoAnswer { since } => ("noAnswer", json!({"sentAt": since})),
         Health::Listener(_) => ("listener", json!({})),
@@ -845,4 +853,34 @@ fn connection(s: &mut Session, _p: &Json) -> Result<Json> {
         "check": extra,
         "signals": {"events": sig.events, "channel": sig.channel, "waiting": sig.waiting, "background": sig.background, "lastCall": sig.last_call, "described": sig.describe()},
     }))
+}
+
+// ---------------------------------------------------------------- AItoCraft: documents and listeners
+
+fn documents_cmd(s: &mut Session, p: &Json) -> Result<Json> {
+    let m = if masked_p(p) { Masker::new(s) } else { Masker::off() };
+    let mut list = crate::documents::list(s);
+    // Titles can name the client: masked like every other read.
+    for d in &mut list {
+        if let Some(t) = d.get("title").and_then(Json::as_str).map(|t| m.text(t)) {
+            d["title"] = json!(t);
+        }
+    }
+    Ok(Json::Array(list))
+}
+
+fn attach(s: &mut Session, p: &Json) -> Result<Json> {
+    let d = s.doc()?;
+    let label = str_p(p, "label").unwrap_or("");
+    let l = crate::listener::attach(d.uid, label);
+    let m = Masker::new(s);
+    let d = s.doc()?;
+    Ok(
+        json!({"listener": l.id, "document": crate::documents::id(d.uid), "title": m.text(&crate::documents::title(d)), "app": crate::documents::APP, "label": l.label}),
+    )
+}
+
+fn detach(_s: &mut Session, p: &Json) -> Result<Json> {
+    let id = text_p(p, "listener", "agent.detach")?;
+    if crate::listener::detach(&id) { Ok(json!({"listener": id})) } else { Err(bad("agent.detach", format!("no listener `{id}`"))) }
 }

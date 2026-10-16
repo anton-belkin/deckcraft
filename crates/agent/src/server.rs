@@ -103,6 +103,8 @@ impl Drop for Watching {
 struct Request {
     method: String,
     path: String,
+    /// The query string (after `?`), raw.
+    query: String,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
 }
@@ -133,7 +135,9 @@ fn read_request(r: &mut BufReader<TcpStream>) -> Option<Request> {
     let mut lines = head.lines();
     let mut first = lines.next()?.split_whitespace();
     let method = first.next()?.to_string();
-    let path = first.next()?.split('?').next().unwrap_or("/").to_string();
+    let target = first.next()?;
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    let (path, query) = (path.to_string(), query.to_string());
     let headers: Vec<(String, String)> = lines.filter_map(|l| l.split_once(':').map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))).collect();
     let len = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("content-length")).and_then(|(_, v)| v.parse::<usize>().ok()).unwrap_or(0);
     if len > MAX_BODY {
@@ -141,7 +145,7 @@ fn read_request(r: &mut BufReader<TcpStream>) -> Option<Request> {
     }
     let mut body = vec![0; len];
     r.read_exact(&mut body).ok()?;
-    Some(Request { method, path, headers, body })
+    Some(Request { method, path, query, headers, body })
 }
 
 fn respond(w: &mut TcpStream, status: &str, ctype: &str, body: &[u8]) -> std::io::Result<()> {
@@ -182,7 +186,7 @@ fn serve(stream: TcpStream, control: &str) {
             }
             ("DELETE", "/mcp") => respond(&mut w, "200 OK", "text/plain", b""),
             ("GET", "/events") => {
-                events(w, control);
+                events(w, control, query_param(&req.query, "document"));
                 return;
             }
             ("GET", "/health") => respond(&mut w, "200 OK", "text/plain", b"ok"),
@@ -195,7 +199,7 @@ fn serve(stream: TcpStream, control: &str) {
     }
 }
 
-const HELP: &str = "DeckCraft agent layer\n\nPOST /mcp     MCP (Streamable HTTP)\nGET  /mcp     questions as channel events (SSE, in the channel mode)\nGET  /events  one JSON line per new question (for a background monitor)\nGET  /health  ok\n";
+const HELP: &str = "DeckCraft agent layer\n\nPOST /mcp     MCP (Streamable HTTP)\nGET  /mcp     questions as channel events (SSE, in the channel mode)\nGET  /events  one JSON line per new question (for a background monitor; ?document=<id> for one deck)\nGET  /health  ok\n";
 
 fn backend<'a>(slot: &'a mut Option<Remote>, control: &str) -> Result<&'a mut Remote, String> {
     if slot.is_none() {
@@ -281,7 +285,8 @@ fn channel_stream(mut w: TcpStream, control: &str) {
 }
 
 /// Streams new pending questions, one JSON object per line, until the client goes away.
-fn events(mut w: TcpStream, control: &str) {
+/// `document`: only that deck's questions (AItoCraft); else the active deck's.
+fn events(mut w: TcpStream, control: &str, document: Option<String>) {
     if w.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n").is_err() {
         return;
     }
@@ -291,7 +296,11 @@ fn events(mut w: TcpStream, control: &str) {
     let mut slot: Option<Remote> = None;
     loop {
         if let Ok(b) = backend(&mut slot, control) {
-            match b.call("engine.execute", json!({"command": "agent.questions", "params": {"status": "pending", "actor": "agent", "masked": true}})) {
+            let mut params = json!({"status": "pending", "actor": "agent", "masked": true});
+            if let Some(d) = &document {
+                params["document"] = json!(d);
+            }
+            match b.call("engine.execute", json!({"command": "agent.questions", "params": params})) {
                 Ok(Value::Array(list)) => {
                     for q in list {
                         let Some(id) = q.get("id").and_then(Value::as_str).map(str::to_string) else { continue };
@@ -306,6 +315,8 @@ fn events(mut w: TcpStream, control: &str) {
                             "place": q.pointer("/where/label"),
                             "question": q.get("text"),
                             "kind": q.get("kind").cloned().unwrap_or_else(|| json!("question")),
+                            "document": q.get("document"),
+                            "documentTitle": q.get("documentTitle"),
                             "hint": "claim_question, investigate, answer_question",
                         });
                         if writeln!(w, "{line}").and_then(|()| w.flush()).is_err() {
@@ -339,4 +350,32 @@ fn gone(s: &TcpStream) -> bool {
         Ok(_) => false,
         Err(e) => e.kind() != std::io::ErrorKind::WouldBlock,
     }
+}
+
+/// A parameter of a query string (`document=deckcraft%3A1%3A2` → `deckcraft:1:2`).
+fn query_param(query: &str, name: &str) -> Option<String> {
+    query.split('&').find_map(|kv| {
+        let (k, v) = kv.split_once('=')?;
+        (k == name).then(|| percent_decode(v)).filter(|v| !v.is_empty())
+    })
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while let Some(&c) = b.get(i) {
+        let hex = b.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (c, hex) {
+            (b'%', Some(v)) => {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+            (b'+', _) => out.push(b' '),
+            (c, _) => out.push(c),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
 }

@@ -48,6 +48,22 @@ fn target(props: &mut serde_json::Map<String, Value>) {
 }
 
 pub fn tools() -> Vec<Value> {
+    let mut list = base_tools();
+    for t in &mut list {
+        let name = t.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+        if let Some(props) = t.pointer_mut("/inputSchema/properties").and_then(Value::as_object_mut) {
+            if name != "list_documents" && name != "detach" && name != "list_commands" {
+                props.insert("document".into(), s("The deck's id (from list_documents or attach); without it, the deck active in DeckCraft"));
+            }
+            if matches!(name.as_str(), "list_questions" | "wait_for_questions" | "claim_question" | "answer_question") {
+                props.insert("listener".into(), s("Your listener id from attach: keeps this conversation listed as listening"));
+            }
+        }
+    }
+    list
+}
+
+fn base_tools() -> Vec<Value> {
     let mut note_props = serde_json::Map::new();
     note_props.insert("text".into(), s("The note (for faq: the prepared answer)"));
     note_props.insert("title".into(), s("Short title (for faq: the question the audience may ask)"));
@@ -131,13 +147,35 @@ pub fn tools() -> Vec<Value> {
             &[],
             true,
         ),
+        tool(
+            "list_documents",
+            "The decks open in DeckCraft: id, title, path, which is in front, open questions, who listens. Pass an id as `document` to any tool to work on that deck.",
+            json!({}),
+            &[],
+            true,
+        ),
+        tool(
+            "attach",
+            "Listen to a deck from this conversation: questions asked in it are for you. Returns your listener id: pass it (and the document) to list_questions, wait_for_questions, claim_question and answer_question.",
+            json!({"label": s("What the person sees: the client and project, e.g. \"Cowork · Acme\"")}),
+            &[],
+            false,
+        ),
+        tool("detach", "Stop listening to a deck.", json!({"listener": s("Your listener id from attach")}), &["listener"], false),
     ]
 }
 
-fn exec(b: &mut dyn Backend, command: &str, mut params: Value) -> Result<Value, String> {
+/// Runs an `agent.*` command as the agent, on the deck `scope` names (AItoCraft's `document`)
+/// and refreshing its `listener`.
+fn exec(b: &mut dyn Backend, scope: &Value, command: &str, mut params: Value) -> Result<Value, String> {
     if let Value::Object(o) = &mut params {
         o.insert("actor".into(), json!("agent"));
         o.insert("masked".into(), json!(true));
+        if let Some(sc) = scope.as_object() {
+            for (k, v) in sc {
+                o.insert(k.clone(), v.clone());
+            }
+        }
     }
     b.call("engine.execute", json!({"command": command, "params": params}))
 }
@@ -153,22 +191,26 @@ fn pick(args: &Value, keys: &[&str]) -> Value {
 }
 
 pub fn call(b: &mut dyn Backend, name: &str, args: &Value) -> Result<Value, String> {
+    let scope = pick(args, &["document", "listener"]);
     match name {
-        "get_context" => exec(b, "agent.context", json!({})),
-        "read_slides" => exec(b, "agent.read", pick(args, &["slide"])),
+        "list_documents" => exec(b, &json!({}), "agent.documents", json!({})),
+        "attach" => exec(b, &pick(args, &["document"]), "agent.attach", pick(args, &["label"])),
+        "detach" => exec(b, &json!({}), "agent.detach", pick(args, &["listener"])),
+        "get_context" => exec(b, &scope, "agent.context", json!({})),
+        "read_slides" => exec(b, &scope, "agent.read", pick(args, &["slide"])),
         "list_links" => {
             if args.get("check").and_then(Value::as_bool) == Some(true) {
-                exec(b, "link.check", json!({}))?;
+                exec(b, &scope, "link.check", json!({}))?;
             }
-            exec(b, "link.list", json!({}))
+            exec(b, &scope, "link.list", json!({}))
         }
-        "list_questions" => exec(b, "agent.questions", pick(args, &["status"])),
+        "list_questions" => exec(b, &scope, "agent.questions", pick(args, &["status"])),
         "wait_for_questions" => {
             let secs = args.get("timeout_seconds").and_then(Value::as_f64).filter(|v| v.is_finite()).unwrap_or(25.0).clamp(0.0, 50.0);
             let mut polls = (secs * 2.0) as u32;
             loop {
                 // `waiting` tells the app an agent is listening (its Connection status).
-                let v = exec(b, "agent.questions", json!({"status": "pending", "waiting": true}))?;
+                let v = exec(b, &scope, "agent.questions", json!({"status": "pending", "waiting": true}))?;
                 if v.as_array().is_some_and(|a| !a.is_empty()) || polls == 0 {
                     return Ok(v);
                 }
@@ -176,12 +218,12 @@ pub fn call(b: &mut dyn Backend, name: &str, args: &Value) -> Result<Value, Stri
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
         }
-        "claim_question" => exec(b, "agent.claim", pick(args, &["id"])),
-        "answer_question" => exec(b, "agent.answer", pick(args, &["id", "text", "links"])),
-        "add_note" => exec(b, "agent.note", pick(args, &["text", "title", "kind", "links", "slide", "shape", "words"])),
-        "log_decision" => exec(b, "agent.decision", pick(args, &["text", "source", "slide", "shape", "words"])),
-        "get_layer" => exec(b, "agent.layer", json!({})),
-        "run_command" => exec(b, "agent.exec", pick(args, &["command", "params", "reason", "source"])),
+        "claim_question" => exec(b, &scope, "agent.claim", pick(args, &["id"])),
+        "answer_question" => exec(b, &scope, "agent.answer", pick(args, &["id", "text", "links"])),
+        "add_note" => exec(b, &scope, "agent.note", pick(args, &["text", "title", "kind", "links", "slide", "shape", "words"])),
+        "log_decision" => exec(b, &scope, "agent.decision", pick(args, &["text", "source", "slide", "shape", "words"])),
+        "get_layer" => exec(b, &scope, "agent.layer", json!({})),
+        "run_command" => exec(b, &scope, "agent.exec", pick(args, &["command", "params", "reason", "source"])),
         "list_commands" => {
             let all = b.call("engine.commands", json!({}))?;
             let q = args.get("search").and_then(Value::as_str).unwrap_or("").to_lowercase();

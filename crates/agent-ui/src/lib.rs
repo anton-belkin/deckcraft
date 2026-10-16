@@ -240,6 +240,15 @@ impl UiExtension for AgentUi {
         ribbon::keytip(self, app, ctx);
         // The background agent (in that mode): started with the first question, fed each new one.
         deckcraft_agent::runner::tick(&mut app.session);
+        // AItoCraft's registry: which decks are open, who listens (debounced; a heartbeat keeps
+        // it fresh while frames are rare). Gone when the window closes.
+        if let Some(url) = server_url() {
+            if ctx.input(|i| i.viewport().close_requested()) {
+                deckcraft_agent::registry::remove();
+            } else {
+                deckcraft_agent::registry::publish(url, deckcraft_agent::documents::list(&app.session));
+            }
+        }
         self.checker.tick(app, ctx);
         // The Agent tab shows the status; the floating button only while the ribbon is collapsed.
         if app.show.is_none() && app.backstage.is_none() && app.ui.ribbon_collapsed {

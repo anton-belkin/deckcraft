@@ -1,8 +1,8 @@
 //! The background agent ([`Mode::Background`]): one `claude -p` process per deck, fed the
 //! questions as stream-json on its stdin. Same contract as GridCraft and WordCraft.
 //!
-//! It runs in the deck's folder (so its session sits with the deck's other files in Claude
-//! Desktop), sees only the DeckCraft MCP server (`--strict-mcp-config`), may use only its tools
+//! It runs in a neutral folder (`ArtCraft/agent-sessions/`) unless the person chose the deck's
+//! folder as its project (PROTOCOL §4: demoted, and explicit about what it implies), sees only the DeckCraft MCP server (`--strict-mcp-config`), may use only its tools
 //! (`--allowedTools mcp__deckcraft__*`), gets the agent skill as its system prompt, and is bounded
 //! by `--max-turns` and `--max-budget-usd`. It is named `DeckCraft · <file>` (`/rename`); its
 //! session id lives in the layer, so reopening the deck resumes the same conversation; a resume
@@ -35,8 +35,11 @@ pub struct Config {
     pub mcp_url: String,
     pub max_turns: u32,
     pub max_budget_usd: f64,
-    /// Where the MCP config and the skill are written, and the agent's folder for an unsaved deck.
+    /// Where the MCP config and the skill are written.
     pub data_dir: Option<PathBuf>,
+    /// Run in the deck's folder (its CLAUDE.md, memory and settings become the agent's context)
+    /// instead of the neutral `ArtCraft/agent-sessions/` (PROTOCOL §4). Off by default.
+    pub use_deck_folder: bool,
 }
 
 impl Default for Config {
@@ -52,6 +55,7 @@ impl Default for Config {
             max_turns: 40,
             max_budget_usd: 3.0,
             data_dir: default_data_dir(),
+            use_deck_folder: false,
         }
     }
 }
@@ -81,6 +85,18 @@ pub fn set_config(c: Config) {
 
 /// The agent skill, given to the background agent as its system prompt.
 pub const SKILL: &str = include_str!("../../../agent-layer/skill/deckcraft-agent/SKILL.md");
+
+/// Where the agent runs: a neutral, empty folder (`ArtCraft/agent-sessions/`, so no project's
+/// CLAUDE.md, memory or settings become its context, its sessions grouped there in Claude
+/// Desktop), or the deck's folder when the person chose that.
+pub fn session_folder(c: &Config, deck: Option<&str>) -> PathBuf {
+    if c.use_deck_folder
+        && let Some(dir) = deck.and_then(|p| std::path::absolute(p).ok()).and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+    {
+        return dir;
+    }
+    crate::registry::artcraft_dir().map(|d| d.join("agent-sessions")).or_else(|| c.data_dir.clone()).unwrap_or_else(std::env::temp_dir)
+}
 
 /// A random-enough UUID (v4 layout) for a session id.
 pub fn new_uuid(salt: u64) -> String {
@@ -278,14 +294,8 @@ pub fn start(s: &Session) -> std::result::Result<Status, String> {
     let l = layer::get(d);
     let fresh = agents().as_ref().is_some_and(|a| a.fresh.contains(&uid));
     let (session, resume) = if l.agent_session.is_empty() || fresh { (new_uuid(uid), false) } else { (l.agent_session.clone(), true) };
-    // The deck's folder: its session sits with the deck's files.
-    let cwd = d
-        .path
-        .as_deref()
-        .and_then(|p| std::path::absolute(p).ok())
-        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
-        .or_else(|| c.data_dir.clone())
-        .unwrap_or_else(std::env::temp_dir);
+    let cwd = session_folder(&c, d.path.as_deref());
+    let _ = std::fs::create_dir_all(&cwd);
     let mut child = Command::new(&c.command)
         .args(args(&c, &session, resume, &mcp, skill.as_deref()))
         .current_dir(&cwd)

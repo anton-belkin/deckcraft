@@ -5,7 +5,7 @@
 //!
 //! `cargo run -p deckcraft-agent-ui --example agent_snapshot -- [--pane slide|questions|links|history|connect]
 //!  [--slide N] [--hover-link] [--presenter] [--agent-tab] [--collapsed]
-//!  [--status answering|checking|noanswer|listener|nobody] [--mode connect|channel|background|off] [--menu] [--size 1440x900] [--dark] out.png`
+//!  [--status answering|checking|noanswer|listener|listening|nobody] [--mode connect|channel|background|off] [--menu] [--size 1440x900] [--dark] out.png`
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use deckcraft_agent::links;
@@ -155,7 +155,8 @@ fn main() {
         }
     }
     deckcraft_agent_ui::install();
-    // Never start a real agent from a screenshot run (the background mode starts one per deck).
+    // Never the real AItoCraft registry, never a real agent from a screenshot run.
+    deckcraft_agent::registry::set_dir(Some(std::env::temp_dir().join("deckcraft-agent-demo/agents")));
     deckcraft_agent::runner::set_config(deckcraft_agent::runner::Config {
         command: "deckcraft-demo-no-agent".into(),
         data_dir: Some(std::env::temp_dir().join("deckcraft-agent-demo/agent")),
@@ -190,9 +191,11 @@ fn main() {
             deckcraft_agent::listener::set_ping(Some(deckcraft_agent::listener::Ping { sent_at: p.sent_at.saturating_sub(95_000), ..p }));
         }
         Some("listener") => deckcraft_agent::listener::note_wait(),
+        Some("listening") => {
+            deckcraft_agent::listener::attach(uid, "Cowork · Acme board");
+        }
         _ => {}
     }
-    let _ = uid;
     if slide != 2 {
         let _ = session.execute("slide.go", &json!({"index": slide.saturating_sub(1)}));
     }

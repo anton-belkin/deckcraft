@@ -25,12 +25,15 @@ pub mod channel;
 pub mod commands;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cowork;
+pub mod documents;
 pub mod layer;
 pub mod links;
 pub mod listener;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mcp;
 pub mod privacy;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod registry;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod runner;
 #[cfg(not(target_arch = "wasm32"))]
@@ -108,7 +111,9 @@ static KEEPER: Keeper = Keeper;
 
 thread_local! {
     /// The commands running now (nested ones stack up): id and the document before.
-    static RUNNING: std::cell::RefCell<Vec<(String, Option<(u64, usize)>)>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The commands running now (nested ones stack up): id, the document before, and the
+    /// document that was active when a `document` param switched to another one.
+    static RUNNING: std::cell::RefCell<Vec<(String, Option<(u64, usize)>, Option<usize>)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 fn doc_ptr(s: &Session) -> Option<(u64, usize)> {
@@ -147,7 +152,20 @@ impl Observer for Keeper {
                 listener::note_wait();
             }
         }
-        RUNNING.with(|b| b.borrow_mut().push((id.to_string(), doc_ptr(s))));
+        if let Some(l) = params.get("listener").and_then(Json::as_str) {
+            listener::touch(l);
+        }
+        // `document` (AItoCraft): the command acts on that deck, active or not (and its undo
+        // step lands there); the active deck comes back after.
+        let mut prev = None;
+        if let Some(doc) = params.get("document").and_then(Json::as_str)
+            && let Some(i) = documents::index(s, doc)
+            && s.active_index() != Some(i)
+        {
+            prev = s.active_index();
+            s.set_active(i);
+        }
+        RUNNING.with(|b| b.borrow_mut().push((id.to_string(), doc_ptr(s), prev)));
         // Write the layer into the presentation just before it is saved.
         if matches!(id, "file.save" | "file.saveAs" | "file.saveBytes" | "file.saveTemplate")
             && let Some(d) = s.active_mut()
@@ -164,6 +182,11 @@ impl Observer for Keeper {
     }
 
     fn intercept(&self, s: &mut Session, id: &str, params: &Json) -> Option<Result<Json>> {
+        if let Some(doc) = params.get("document").and_then(Json::as_str)
+            && documents::index(s, doc).is_none()
+        {
+            return Some(Err(EngineError::Other(format!("document {doc} is not open in DeckCraft"))));
+        }
         // Mode Off: the agent's calls are refused (the person's still work).
         if refused_when_off(listener::mode(), params) {
             return Some(Err(bad(id, "the agent is switched off in DeckCraft (Agent ▸ Connection ▸ Mode)")));
@@ -177,32 +200,40 @@ impl Observer for Keeper {
     }
 
     fn after(&self, s: &mut Session, id: &str, params: &Json, result: &Result<Json>) {
-        let (before, parent) = RUNNING.with(|b| {
+        let (before, prev, parent) = RUNNING.with(|b| {
             let mut b = b.borrow_mut();
-            let me = b.pop().and_then(|(_, p)| p);
-            (me, b.last().map(|(p, _)| p.clone()))
+            let (me, prev) = b.pop().map(|(_, p, v)| (p, v)).unwrap_or((None, None));
+            (me, prev, b.last().map(|(p, _, _)| p.clone()))
         });
-        if id == "file.close"
-            && let Some((uid, _)) = before
-            && s.documents().iter().all(|d| d.uid != uid)
-        {
-            layer::forget(uid);
-            return;
+        keep(s, id, params, result, before, parent);
+        if let Some(i) = prev {
+            s.set_active(i);
         }
-        if result.is_ok() && matches!(id, "file.save" | "file.saveAs") {
-            links::register_uses(s);
-        }
-        let Some(d) = s.active_mut() else { return };
-        anchor::refresh(d);
-        // Only what a person did, or what the agent ran through agent.exec: not the steps a
-        // command takes inside (they are part of the outer one).
-        let nested = parent.as_deref().is_some_and(|p| p != "agent.exec");
-        let changed = result.is_ok() && before.is_some_and(|(uid, ptr)| uid == d.uid && ptr != Arc::as_ptr(&d.doc) as usize);
-        if nested || !changed || is_view_only(id) || id == "edit.undo" || id == "edit.redo" {
-            return;
-        }
-        log_change(s, id, params, parent.as_deref() == Some("agent.exec"));
     }
+}
+
+/// After a command: the anchors, the uses of links, the history.
+fn keep(s: &mut Session, id: &str, params: &Json, result: &Result<Json>, before: Option<(u64, usize)>, parent: Option<String>) {
+    if id == "file.close"
+        && let Some((uid, _)) = before
+        && s.documents().iter().all(|d| d.uid != uid)
+    {
+        layer::forget(uid);
+        return;
+    }
+    if result.is_ok() && matches!(id, "file.save" | "file.saveAs") {
+        links::register_uses(s);
+    }
+    let Some(d) = s.active_mut() else { return };
+    anchor::refresh(d);
+    // Only what a person did, or what the agent ran through agent.exec: not the steps a
+    // command takes inside (they are part of the outer one).
+    let nested = parent.as_deref().is_some_and(|p| p != "agent.exec");
+    let changed = result.is_ok() && before.is_some_and(|(uid, ptr)| uid == d.uid && ptr != Arc::as_ptr(&d.doc) as usize);
+    if nested || !changed || is_view_only(id) || id == "edit.undo" || id == "edit.redo" {
+        return;
+    }
+    log_change(s, id, params, parent.as_deref() == Some("agent.exec"));
 }
 
 /// Records a change in the history. People's own edits are recorded once the deck has an agent
