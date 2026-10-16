@@ -13,6 +13,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+mod agent; // fork:agent
 mod audio;
 mod control_server;
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -183,6 +184,7 @@ fn main() -> eframe::Result {
             Startup::Run { control_port, files, sample, show } => (control_port, files, sample, show),
         };
     log::info!("DeckCraft {} ({} {})", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH);
+    let (files, agent_port, control_port) = agent::take_args(files, control_port); // fork:agent
     // The log file lives under the settings directory; opened after the arguments, so `--help` and
     // `--version` leave no file behind. Records logged until now are written to it first.
     if let Some(logger) = logger {
@@ -251,6 +253,7 @@ fn main() -> eframe::Result {
                 let rx = control_server::start(port, cc.egui_ctx.clone());
                 app = app.with_control(rx);
             }
+            agent::start(agent_port, control_port); // fork:agent
             if sample && let Err(e) = deckcraft_engine::sample::open_sample(&mut app.session) {
                 log::error!("sample: {e}");
             }

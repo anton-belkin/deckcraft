@@ -896,6 +896,8 @@ version = "0.7.0"
 dependencies = [
  "arboard",
  "cpal",
+ "deckcraft-agent",
+ "deckcraft-agent-ui",
  "deckcraft-engine",
  "deckcraft-media",
  "deckcraft-ui-egui",
