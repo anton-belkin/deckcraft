@@ -76,13 +76,45 @@ upstream. Each one accepted upstream removes its lines from the patch.
   `.pptx` on disk hold real text (same as GridCraft; the "safe file" mode is the next step).
 - **The Agent tab holds what isn't about one piece of content**, in four groups named the same in
   GridCraft, WordCraft and DeckCraft: *Agent* (the pane, with what is waiting), *Client data*
-  (mark/unmark the selection), *Connection* (the server, whether an agent is connected and who,
-  Copy MCP Command, Connect Cowork) and *Links* (out-of-date count, Check Now, Update Stale). The
-  pane keeps what is about the content: this slide's questions, prepared answers, notes and linked
-  cells, all questions, link details, the history. Under the big buttons a status line says where
-  each stands (`1 ready` / `2 waiting` / `1 in work` / `idle`; Cowork `connected` / `not set up` /
-  `quit Claude (⌘Q)` / `open Claude` / `other build`; links `up to date` / `1 out of date`). The
-  floating status button shows only while the ribbon is collapsed.
+  (mark/unmark the selection), *Connection* and *Links* (out-of-date count, Check Now, Update
+  Stale). The pane keeps what is about the content: this slide's questions, prepared answers,
+  notes and linked cells, all questions, link details, the history. Under the big buttons a status
+  line says where each stands (`1 ready` / `2 waiting` / `1 in work` / `idle`; links `up to date`
+  / `1 out of date`). The floating status button shows only while the ribbon is collapsed.
+- **Connection: three things only** (the shared spec). *Status*, with **Check** next to it, which
+  asks the agent "Is anyone there?" (`agent.ping`): a system question (`kind: "ping"`) that goes
+  out through every path a question goes (list_questions, wait_for_questions, `/events`, the
+  channel, the background agent) but is never shown, gets no badge and is never saved; any answer
+  marks it answered. Green "Agent answering · checked 12 s ago" after an answer; amber "Listener
+  connected · not checked" on passive signs only (an `/events` stream, a channel stream, a
+  `wait_for_questions` open now or in the last minute, the background agent running); grey "Nobody
+  is listening"; red "No answer to check" a minute after an unanswered check. The sub-line says
+  which signs and when the agent last called. *Mode*, a list with one line of explanation each:
+  I connect my agent (MCP: Claude Code, Cowork, any client), Send to my Claude Code session
+  (Channels), Background agent (DeckCraft runs claude itself), Off (the agent's calls are refused).
+  *Copy ▾*, whose items depend on the mode, each copying one thing: Claude Code: add MCP server,
+  Monitor command, Connect Cowork… / 1. Add channel server, 2. Start Claude Code with the channel /
+  for the background agent, Open session in Claude Desktop and New session instead. URL, ports,
+  the session and the last error are under Details. The mode is the app's (remembered in the
+  settings folder, or `--agent-mode`), never the file's: a deck someone sends must not start an
+  agent that spends the reader's money.
+- **Send to my Claude Code session** (Claude Code Channels, research preview): the server declares
+  `experimental["claude/channel"]` and, in that mode, streams each new question on `GET /mcp`
+  (SSE) as `notifications/claude/channel`. Claude Code spawns channel servers over stdio, so
+  `deckcraft --agent-stdio` bridges: requests through the control channel, events from the app's
+  `GET /mcp` to stdout. `claude mcp add deckcraft-channel -- <deckcraft> --agent-stdio --control
+  127.0.0.1:7985 --agent-port 7984`, then `claude --dangerously-load-development-channels
+  server:deckcraft-channel`. Interactive sessions only (`-p` ignores channels).
+- **Background agent** (`crates/agent/src/runner.rs`): one `claude -p --input-format stream-json
+  --output-format stream-json --verbose` process per deck, started by the first open question, in
+  the deck's folder (its session sits with the deck's files in Claude Desktop's Code tab), with
+  `--strict-mcp-config` and only the DeckCraft server, `--allowedTools "mcp__deckcraft__*"`, the
+  skill as `--append-system-prompt-file`, `--max-turns 40`, `--max-budget-usd 3`. It is named
+  `/rename DeckCraft · <file>`, gets each new question once as a stream-json user message, and its
+  session id is kept in the layer: reopening the deck resumes it (`--resume`); a resume that fails
+  here, or New session, starts a fresh one from a summary of the history. Stop is end of input,
+  then SIGINT, then kill. Never `--bare`. `DECKCRAFT_AGENT_COMMAND` replaces `claude`; tests and the
+  snapshot example use a command that doesn't exist.
 - **Cowork over stdio** (the contract GridCraft and WordCraft share). Claude Desktop and Cowork
   start local MCP servers as processes: `deckcraft --agent-stdio [--control 127.0.0.1:7985]` is
   handled on the first line of `main`, before logging and the window, speaks newline-delimited

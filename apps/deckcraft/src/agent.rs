@@ -2,7 +2,9 @@
 //! in-app MCP server (`http://127.0.0.1:7984/mcp`), which reaches the presentation through the
 //! control channel.
 //!
-//! `--agent-port <port>` (or `DECKCRAFT_AGENT_PORT`) picks the port, `--no-agent` turns it off.
+//! `--agent-port <port>` (or `DECKCRAFT_AGENT_PORT`) picks the port, `--no-agent` turns it off,
+//! `--agent-mode connect|channel|background|off` says how the agent comes in (else the mode last
+//! chosen on the Agent tab).
 //! `--agent-stdio [--control HOST:PORT]` doesn't open a window: it serves the agent layer's MCP
 //! over stdin/stdout for Claude Desktop and Cowork, reaching the running app through its control
 //! channel (see `deckcraft_agent::stdio`).
@@ -14,6 +16,14 @@ const AGENT_PORT: u16 = 7984;
 /// Control port used for the agent when none was asked for.
 const CONTROL_PORT: u16 = 7985;
 
+/// `--agent-mode` was given (it wins over the remembered mode).
+static MODE_GIVEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Where the app remembers the agent mode (the app's setting, never the file's).
+fn mode_file() -> Option<std::path::PathBuf> {
+    crate::config_dir().map(|d| d.join("agent-mode"))
+}
+
 /// Takes the agent's own flags out of the files the command line named (the app's own parser
 /// takes unknown arguments for files); returns the files, the agent port and the control port.
 pub fn take_args(args: Vec<String>, control: Option<u16>) -> (Vec<String>, Option<u16>, Option<u16>) {
@@ -24,6 +34,12 @@ pub fn take_args(args: Vec<String>, control: Option<u16>) -> (Vec<String>, Optio
         match a.as_str() {
             "--agent-port" => port = it.next().and_then(|p| p.parse().ok()),
             "--no-agent" => port = None,
+            "--agent-mode" => {
+                if let Some(m) = it.next().as_deref().and_then(deckcraft_agent::listener::Mode::parse) {
+                    deckcraft_agent::listener::set_mode(m);
+                    MODE_GIVEN.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
             _ => rest.push(a),
         }
     }
@@ -39,6 +55,14 @@ pub fn control_port(agent: Option<u16>, control: Option<u16>) -> Option<u16> {
 pub fn start(agent: Option<u16>, control: Option<u16>) {
     let (Some(port), Some(control)) = (agent, control) else { return };
     deckcraft_agent_ui::install();
+    if let Some(f) = mode_file() {
+        if !MODE_GIVEN.load(std::sync::atomic::Ordering::Relaxed)
+            && let Some(m) = std::fs::read_to_string(&f).ok().as_deref().and_then(deckcraft_agent::listener::Mode::parse)
+        {
+            deckcraft_agent::listener::set_mode(m);
+        }
+        deckcraft_agent_ui::set_mode_file(f);
+    }
     let addr = format!("127.0.0.1:{control}");
     deckcraft_agent::links::set_own_control(addr.clone());
     match deckcraft_agent::server::start(port, addr) {
@@ -52,7 +76,7 @@ pub fn start(agent: Option<u16>, control: Option<u16>) {
     }
 }
 
-/// `deckcraft --agent-stdio [--control HOST:PORT]`: serve the agent layer's MCP over stdio (for
+/// `deckcraft --agent-stdio [--control HOST:PORT] [--agent-port PORT]`: serve the agent layer's MCP over stdio (for
 /// Claude Desktop and Cowork), reaching the running app through its control channel, and exit.
 /// Runs first in `main`: nothing else of the app starts (no log, no window), and nothing but
 /// protocol goes to stdout.
@@ -66,14 +90,14 @@ pub fn stdio_if_asked() {
     if let Some(v) = args.iter().position(|a| a == "--control").and_then(|i| args.get(i + 1)) {
         addr = if v.contains(':') { v.clone() } else { format!("127.0.0.1:{v}") };
     }
-    let mut backend = deckcraft_agent::stdio::Lazy::new(addr);
-    let code = match deckcraft_agent::stdio::serve(&mut backend, std::io::stdin().lock(), std::io::stdout()) {
-        Ok(()) => 0,
-        Err(e) => {
-            let _ = std::io::Write::write_fmt(&mut std::io::stderr(), format_args!("deckcraft --agent-stdio: {e}\n"));
-            1
-        }
-    };
+    let agent_port = args
+        .iter()
+        .position(|a| a == "--agent-port")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|p| p.parse::<u16>().ok())
+        .or_else(|| std::env::var("DECKCRAFT_AGENT_PORT").ok().and_then(|p| p.parse().ok()))
+        .unwrap_or(AGENT_PORT);
+    let code = deckcraft_agent::stdio::run(&addr, agent_port);
     std::process::exit(code);
 }
 

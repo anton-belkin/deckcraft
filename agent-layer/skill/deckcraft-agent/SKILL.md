@@ -35,6 +35,13 @@ call returns as soon as a question is pending, or empty after up to 50 s; answer
 then call it again. Stop when the user says so. On startup also call `list_questions` with status
 `open`: questions asked before you connected are waiting too.
 
+A question with kind `ping` is a connection check: answer it at once with "here", don't
+investigate.
+
+When DeckCraft sends questions to your Claude Code session (`notifications/claude/channel` from
+the `deckcraft-channel` server), each one arrives as a message with its `question_id`: handle it
+like any other question.
+
 ## For each question
 
 1. `claim_question` at once: the shape shows the user you are on it.
