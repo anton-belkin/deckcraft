@@ -4,7 +4,7 @@
 //! have since changed.
 //!
 //! `cargo run -p deckcraft-agent-ui --example agent_snapshot -- [--pane slide|questions|links|history|connect]
-//!  [--slide N] [--hover-link] [--presenter] [--size 1440x900] [--dark] out.png`
+//!  [--slide N] [--hover-link] [--presenter] [--agent-tab] [--size 1440x900] [--dark] out.png`
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use deckcraft_agent::links;
@@ -128,7 +128,7 @@ fn demo(dir: &std::path::Path) -> (Session, ShapeId) {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (mut pane, mut slide, mut hover, mut dark, mut presenter) = (None, 2usize, false, false, false);
+    let (mut pane, mut slide, mut hover, mut dark, mut presenter, mut agent_tab) = (None, 2usize, false, false, false, false);
     let mut size = (1440.0f32, 900.0f32);
     let mut out = "agent.png".to_string();
     let mut it = args.into_iter();
@@ -138,6 +138,7 @@ fn main() {
             "--slide" => slide = it.next().and_then(|v| v.parse().ok()).unwrap_or(2),
             "--hover-link" => hover = true,
             "--presenter" => presenter = true,
+            "--agent-tab" => agent_tab = true,
             "--dark" => dark = true,
             "--size" => {
                 if let Some((w, h)) = it.next().as_deref().and_then(|s| s.split_once('x').map(|(w, h)| (w.to_string(), h.to_string()))) {
@@ -185,6 +186,9 @@ fn main() {
             },
             {
                 let mut app = SlideApp::new(session, Services::default());
+                if agent_tab {
+                    app.ui.tab = "Agent".into();
+                }
                 app.ui.brightness = if dark { deckcraft_ui_egui::theme::Brightness::Dark } else { deckcraft_ui_egui::theme::Brightness::Light };
                 app
             },

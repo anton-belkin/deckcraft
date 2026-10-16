@@ -20,7 +20,6 @@ enum Act {
     Follow(String),
     Go(Place),
     Run(&'static str, Json),
-    CheckNow,
 }
 
 pub(crate) fn show(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui) {
@@ -59,7 +58,6 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui) {
                     (Tab::Questions, q),
                     (Tab::Links, if stale > 0 { format!("Linked Cells ({stale})") } else { "Linked Cells".into() }),
                     (Tab::History, "History".into()),
-                    (Tab::Connect, "Connect".into()),
                 ] {
                     if ui.selectable_label(st.tab == tab, name).clicked() {
                         st.tab = tab;
@@ -72,7 +70,6 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui) {
                 Tab::Questions => questions_tab(app, ui, &l, &t, &p, &mut acts),
                 Tab::Links => links_tab(app, ui, &t, &p, &mut acts),
                 Tab::History => history_tab(app, ui, &l, &t, &p, &mut acts),
-                Tab::Connect => connect_tab(ui, &t),
             });
         });
     if close {
@@ -85,7 +82,6 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui) {
             Act::Run(id, params) => {
                 let _ = app.run(id, params);
             }
-            Act::CheckNow => st.checker.now = true,
         }
     }
 }
@@ -241,12 +237,6 @@ fn slide_tab(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui, l: &Layer, t: &T
             acts.push(Act::Run("agent.ask", json!({"text": st.draft.trim()})));
             st.draft.clear();
         }
-        if let Some((s, id, private)) = selection_private(app) {
-            let label = if private { "Unmark Client Data" } else { "Mark as Client Data" };
-            if ui.button(label).on_hover_text("The agent sees pseudonyms for client data and can't change it").clicked() {
-                acts.push(Act::Run("agent.private", json!({"slide": s + 1, "shape": id.0, "on": !private})));
-            }
-        }
     });
     if let Some((_, true)) = selection_private(app).map(|(_, id, p)| (id, p)) {
         ui.label(RichText::new("Client data: the agent reads pseudonyms like [client-1] here.").small().color(p.private));
@@ -336,12 +326,7 @@ fn questions_tab(app: &SlideApp, ui: &mut Ui, l: &Layer, t: &Tokens, p: &Palette
 fn links_tab(app: &SlideApp, ui: &mut Ui, t: &Tokens, p: &Palette, acts: &mut Vec<Act>) {
     let Some(d) = app.session.active() else { return };
     let all = links::all(&d.doc);
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(format!("{} link{} to spreadsheet cells", all.len(), if all.len() == 1 { "" } else { "s" })).color(t.text_dim));
-        if !all.is_empty() && ui.small_button("Check Now").clicked() {
-            acts.push(Act::CheckNow);
-        }
-    });
+    ui.label(RichText::new(format!("{} link{} to spreadsheet cells", all.len(), if all.len() == 1 { "" } else { "s" })).color(t.text_dim));
     if all.is_empty() {
         ui.label(RichText::new("In GridCraft, select cells and use Copy Link to Cells, then paste here: the slide remembers where the numbers come from and tells you when they change.").small().color(t.text_faint));
     }
@@ -372,26 +357,4 @@ fn history_tab(app: &SlideApp, ui: &mut Ui, l: &Layer, t: &Tokens, p: &Palette, 
         }
         ui.add_space(4.0);
     }
-}
-
-fn connect_tab(ui: &mut Ui, t: &Tokens) {
-    let url = crate::server_url().unwrap_or("http://127.0.0.1:7984/mcp");
-    let base = url.trim_end_matches("/mcp");
-    ui.label(RichText::new("Your agent works on this deck through its MCP server, inside DeckCraft:").color(t.text));
-    ui.add_space(4.0);
-    let code = |ui: &mut Ui, s: &str| {
-        let mut text = s.to_string();
-        ui.add(egui::TextEdit::multiline(&mut text).code_editor().desired_rows(1).desired_width(f32::INFINITY));
-    };
-    ui.label(RichText::new("Claude Code").strong());
-    code(ui, &format!("claude mcp add --transport http deckcraft {url}"));
-    ui.label(RichText::new("Watch for questions in the background").strong());
-    code(ui, &format!("curl -sN {base}/events"));
-    ui.add_space(6.0);
-    ui.label(
-        RichText::new("Tools: get_context, read_slides, list_links, list_questions, wait_for_questions, claim_question, answer_question, add_note, log_decision, run_command.")
-            .small()
-            .color(t.text_dim),
-    );
-    ui.label(RichText::new("Client data is never sent: the agent reads pseudonyms in its place and can't change it.").small().color(t.text_dim));
 }

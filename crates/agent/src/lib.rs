@@ -21,6 +21,8 @@
 
 pub mod anchor;
 pub mod commands;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod cowork;
 pub mod layer;
 pub mod links;
 #[cfg(not(target_arch = "wasm32"))]
@@ -28,6 +30,8 @@ pub mod mcp;
 pub mod privacy;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod server;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod stdio;
 pub mod xlsx;
 
 use std::sync::Arc;

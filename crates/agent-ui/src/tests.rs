@@ -57,3 +57,21 @@ fn presenter_view_lists_the_slide_s_prepared_answers() {
     h.get_by_label("Prepared answers (1)");
     h.get_by_label("Is it audited?");
 }
+
+#[test]
+fn the_agent_tab_marks_the_selection_as_client_data() {
+    let mut s = Session::with_new();
+    s.execute("slide.new", &json!({"layout": "blank"})).unwrap();
+    let id = s.execute("insert.textBox", &json!({"rect": [60, 60, 400, 60], "text": "Acme Holdings AG"})).unwrap()["id"].as_u64().unwrap();
+    s.execute("selection.select", &json!({"ids": [id]})).unwrap();
+    let mut h = harness(s);
+    h.state_mut().ui.tab = "Agent".into();
+    h.run_steps(2);
+    h.get_by_label_contains("Mark Client").click();
+    h.run_steps(2);
+    let app = h.state();
+    let set = deckcraft_agent::privacy::private_shapes(&app.session);
+    assert!(set.iter().any(|(_, x)| u64::from(x.0) == id), "marked from the ribbon");
+    assert_eq!(app.ui.tab, "Agent", "the tab stays known");
+    h.get_by_label_contains("Connect");
+}

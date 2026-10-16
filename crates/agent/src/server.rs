@@ -11,6 +11,8 @@
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use deckcraft_mcp::{Backend, Remote};
@@ -35,7 +37,58 @@ pub fn start(port: u16, control: String) -> std::io::Result<u16> {
         }
     })?;
     log::info!("agent MCP server on http://127.0.0.1:{port}/mcp");
+    LISTENING.store(u32::from(port), Ordering::Relaxed);
     Ok(port)
+}
+
+static LISTENING: AtomicU32 = AtomicU32::new(0);
+static LAST_CALL: AtomicU64 = AtomicU64::new(0);
+static MONITORS: AtomicUsize = AtomicUsize::new(0);
+static CLIENT: Mutex<String> = Mutex::new(String::new());
+
+/// What the server knows about its agent, for the app's Connection status.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Status {
+    /// The port it listens on (`None`: not started).
+    pub port: Option<u16>,
+    /// When an agent last called a tool or initialised (ms since the epoch; 0: never).
+    pub last_call: u64,
+    /// Agents watching `/events` right now.
+    pub monitors: usize,
+    /// The client's name from `initialize` (`claude-code`, `claude-ai`…).
+    pub client: String,
+}
+
+pub fn status() -> Status {
+    let port = u16::try_from(LISTENING.load(Ordering::Relaxed)).ok().filter(|p| *p != 0);
+    let client = CLIENT.lock().map(|c| c.clone()).unwrap_or_default();
+    Status { port, last_call: LAST_CALL.load(Ordering::Relaxed), monitors: MONITORS.load(Ordering::Relaxed), client }
+}
+
+fn note_call(msg: &Value) {
+    LAST_CALL.store(crate::now_ms(), Ordering::Relaxed);
+    if msg.get("method").and_then(Value::as_str) == Some("initialize")
+        && let Some(name) = msg.pointer("/params/clientInfo/name").and_then(Value::as_str)
+        && let Ok(mut c) = CLIENT.lock()
+    {
+        *c = name.chars().take(80).collect();
+    }
+}
+
+/// Counts an `/events` watcher while it is connected.
+struct Watching;
+
+impl Watching {
+    fn new() -> Self {
+        MONITORS.fetch_add(1, Ordering::Relaxed);
+        Watching
+    }
+}
+
+impl Drop for Watching {
+    fn drop(&mut self) {
+        MONITORS.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 struct Request {
@@ -141,6 +194,7 @@ fn post_mcp(w: &mut TcpStream, req: &Request, control: &str, slot: &mut Option<R
         let e = json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "parse error"}});
         return respond(w, "400 Bad Request", "application/json", e.to_string().as_bytes());
     };
+    note_call(&msg);
     let reply = match backend(slot, control) {
         Ok(b) => handle_any(b, &msg),
         Err(e) => msg.get("id").map(|id| json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32603, "message": e}})),
@@ -151,7 +205,7 @@ fn post_mcp(w: &mut TcpStream, req: &Request, control: &str, slot: &mut Option<R
     }
 }
 
-fn handle_any(b: &mut dyn Backend, msg: &Value) -> Option<Value> {
+pub(crate) fn handle_any(b: &mut dyn Backend, msg: &Value) -> Option<Value> {
     match msg {
         Value::Array(batch) => {
             let out: Vec<Value> = batch.iter().filter_map(|m| crate::mcp::handle(b, m)).collect();
@@ -167,6 +221,7 @@ fn events(mut w: TcpStream, control: &str) {
         return;
     }
     let _ = w.flush();
+    let _watching = Watching::new();
     let mut seen: HashSet<String> = HashSet::new();
     let mut slot: Option<Remote> = None;
     loop {

@@ -14,6 +14,7 @@
 mod checker;
 mod overlay;
 mod pane;
+mod ribbon;
 
 use std::sync::OnceLock;
 
@@ -44,14 +45,15 @@ pub(crate) fn server_url() -> Option<&'static str> {
     SERVER.get().map(String::as_str)
 }
 
-static REQUEST: std::sync::Mutex<Option<(bool, String)>> = std::sync::Mutex::new(None);
+thread_local! {
+    /// A pane request for the UI thread that made it (tests run several UIs at once).
+    static REQUEST: std::cell::RefCell<Option<(bool, String)>> = const { std::cell::RefCell::new(None) };
+}
 
-/// Opens (or closes) the Agent pane on a tab (`slide`, `questions`, `links`, `history`,
-/// `connect`) from the next frame.
+/// Opens (or closes) the Agent pane on a tab (`slide`, `questions`, `links`, `history`)
+/// from the next frame (on the UI thread).
 pub fn request_pane(open: bool, tab: &str) {
-    if let Ok(mut r) = REQUEST.lock() {
-        *r = Some((open, tab.to_string()));
-    }
+    REQUEST.with(|r| *r.borrow_mut() = Some((open, tab.to_string())));
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -61,7 +63,6 @@ pub(crate) enum Tab {
     Questions,
     Links,
     History,
-    Connect,
 }
 
 #[derive(Default)]
@@ -76,6 +77,7 @@ pub(crate) struct AgentUi {
     /// The document Presenter View shows (it only gets the presentation).
     pub presenter_uid: Option<u64>,
     pub checker: checker::Checker,
+    pub ribbon: ribbon::State,
 }
 
 /// The agent layer's colours (not in the theme: they mean the same in light and dark).
@@ -202,13 +204,12 @@ pub(crate) fn prepared_answers<'a>(doc: &Presentation, l: &'a Layer, slide: usiz
 
 impl UiExtension for AgentUi {
     fn frame(&mut self, app: &mut SlideApp, ctx: &egui::Context) {
-        if let Some((open, tab)) = REQUEST.lock().ok().and_then(|mut r| r.take()) {
+        if let Some((open, tab)) = REQUEST.with(|r| r.borrow_mut().take()) {
             self.open = open;
             self.tab = match tab.as_str() {
                 "questions" => Tab::Questions,
                 "links" => Tab::Links,
                 "history" => Tab::History,
-                "connect" => Tab::Connect,
                 _ => Tab::Slide,
             };
         }
@@ -218,9 +219,18 @@ impl UiExtension for AgentUi {
             let _ = layer::get(d);
         }
         self.checker.tick(app, ctx);
-        if app.show.is_none() && app.backstage.is_none() {
+        // The Agent tab shows the status; the floating button only while the ribbon is collapsed.
+        if app.show.is_none() && app.backstage.is_none() && app.ui.ribbon_collapsed {
             self.launcher(app, ctx);
         }
+    }
+
+    fn ribbon_tabs(&self, app: &SlideApp) -> Vec<String> {
+        if app.session.active().is_some() { vec![ribbon::TAB.to_string()] } else { vec![] }
+    }
+
+    fn ribbon_tab(&mut self, app: &mut SlideApp, ui: &mut Ui, _name: &str) {
+        ribbon::show(self, app, ui);
     }
 
     fn side_panel(&mut self, app: &mut SlideApp, ui: &mut Ui) {
