@@ -2,9 +2,11 @@
 
 This fork adds a layer of interaction with the presenter's own agent (Claude Code, Claude Desktop,
 any MCP client) inside the presentation, so the person who presents or signs off a deck can do it
-faster and safer: questions on slides, shapes and numbers answered in the background, prepared
-answers to the audience's likely questions per slide (in Presenter View too), agent notes with
-sources, a privacy gate for client data, a history of who changed what — and **tables and pictures
+faster and safer: **topics** (`~/aitocraft/TOPICS.md`) — questions on slides, shapes and numbers,
+answered in the background, each with its places, a status (Open, Revise, Agreed, For information),
+notes and a discussion, marked on the slide by small numbered circles —, prepared answers to the
+audience's likely questions per slide (in Presenter View too), readiness for sign-off, a privacy
+gate for client data, a history of who changed what, everything the person does undoable — and **tables and pictures
 linked to spreadsheet cells** that know where their numbers come from and notice when they change.
 
 The same layer exists in GridCraft (the reference design, `anton-belkin/gridcraft`, branch
@@ -16,20 +18,20 @@ alive" before changing anything outside the agent crates.
 
 | Path | What | Upstream? |
 | --- | --- | --- |
-| `crates/agent/` (`deckcraft-agent`) | The layer: data model and storage in the `.pptx`, anchors, `agent.*` and `link.*` commands, privacy masking, Excel links (`links.rs`, `xlsx.rs`), the in-app MCP server and `/events` | fork only |
-| `crates/agent-ui/` (`deckcraft-agent-ui`) | The **Agent** ribbon tab (`ribbon.rs`), badges on shapes and slides, the Agent pane, the linked-cells hover card, prepared answers in Presenter View, context-menu items, the background link checker; `examples/agent_snapshot.rs` renders it offscreen | fork only |
+| `crates/agent/` (`deckcraft-agent`) | The layer: data model (v2) and storage in the `.pptx`, anchors, topics (`topics.rs`: numbering, places, readiness; `topic_cmds.rs`; `textlinks.rs`: links inside text; `undo.rs`: the person's undo steps), `agent.*` and `link.*` commands, privacy masking, Excel links (`links.rs`, `xlsx.rs`), the in-app MCP server and `/events` | fork only |
+| `crates/agent-ui/` (`deckcraft-agent-ui`) | The **Agent** ribbon tab (`ribbon.rs`), topic markers on shapes and slides, the Agent pane (Selection, Overview, History), the linked-cells hover card, prepared answers and the markers toggle in Presenter View, context-menu items, the background link checker; `examples/agent_snapshot.rs` renders it offscreen | fork only |
 | `apps/deckcraft/src/agent.rs` | Starts the layer in the desktop app (`--agent-port`, `--no-agent`), and `--agent-stdio [--control HOST:PORT]` (the MCP over stdio for Claude Desktop and Cowork, no window) | fork only |
 | `agent-layer/links.md` | **The Excel → slide link contract** (clipboard payload, staleness, back-references) and the exact list of what GridCraft adds | fork only |
 | `agent-layer/skill/deckcraft-agent/` | The agent's skill | fork only |
 | `agent-layer/rebase.sh` | Rebase onto upstream and run the gates | fork only |
-| `crates/engine/src/ext.rs` | **Hook**: extension commands, command observers, command interceptors | new file in an upstream crate |
-| `crates/ui-egui/src/ext.rs` | **Hook**: UI extensions (ribbon tabs, side panel, slide overlay, context menu, presenter notes, per-frame) | new file in an upstream crate |
+| `crates/engine/src/ext.rs` | **Hook**: extension commands, command observers, command interceptors, custom undo steps (`push_step`) | new file in an upstream crate |
+| `crates/ui-egui/src/ext.rs` | **Hook**: UI extensions (ribbon tabs, side panel, slide overlay, context menu, presenter notes and slide overlay, per-frame) | new file in an upstream crate |
 | lines marked `fork:agent` | The only edits to upstream files | patch |
 
 ### The patch to upstream files
 
 Every edit to a file that exists upstream carries a `fork:agent` comment.
-`git grep -n fork:agent -- ':!crates/agent*' ':!agent-layer'` lists them: 30 lines, all insertions
+`git grep -n fork:agent -- ':!crates/agent*' ':!agent-layer'` lists them: 31 lines, all insertions
 or one-line changes:
 
 - `crates/engine/src/lib.rs`: `pub mod ext;`; in `Session::execute` the observers before and after
@@ -40,7 +42,8 @@ or one-line changes:
   beside the task pane.
 - `crates/ui-egui/src/canvas.rs`: `ext::paint_slide` after the built-in overlays, `ext::context_menu`
   at the end of the slide's context menu.
-- `crates/ui-egui/src/show.rs`: `ext::presenter_notes` under the speaker notes in Presenter View.
+- `crates/ui-egui/src/show.rs`: `ext::presenter_notes` under the speaker notes in Presenter View,
+  `ext::presenter_slide` over the presenter's picture of the current slide.
 - `crates/ui-egui/src/ribbon.rs`: extension tabs (`ext::ribbon_tabs`) known and listed after the
   built-in tabs, their content drawn by `ext::ribbon_tab` (5 lines).
 - `apps/deckcraft/src/main.rs` (4 lines: `--agent-stdio` on the first line of `main`), `apps/deckcraft/Cargo.toml` (2): wiring.
@@ -51,6 +54,40 @@ The hooks know nothing about agents: they are generic extension points, written 
 upstream. Each one accepted upstream removes its lines from the patch.
 
 ## Design decisions (and why)
+
+- **Topics** (`~/aitocraft/TOPICS.md`, shared with GridCraft and WordCraft). A question starts a
+  topic on the selection, or joins the topic the selection already has ("New Topic" starts a
+  separate one). A topic has places (shapes by their hidden key, words in a shape, slides), a
+  status with a line of text, notes and the discussion. Numbering is deck order: slides in order,
+  then on a slide its own places first, then shapes by rows of 24 pt top to bottom and left to
+  right (z-order isn't a reading order), then words by their offset in the text; places of a
+  topic with several are 3.1, 3.2. The marker is a small circle with the number at the shape's
+  top-right corner (the slide's own at the slide's), in the status colour, blue and pulsing while
+  the agent works on it, with a dot for an unread answer; several stack leftwards. In Presenter
+  View they show only when the presenter ticks "Show topic markers" under the notes. Only a person
+  sets Agreed; the agent proposes it and the card has Confirm Agreed. A linked table whose source
+  changed raises its topics to Revise (by DeckCraft, in the log), once per change.
+- **Links inside text are anchors.** `[slide 4](slide:4)`, `shape:`, `place:`, `topic:`, `note:`
+  and a plain "slide 4" are stored as `anchor:<id>` (or topic and place ids) when an answer, note,
+  status text or question is stored, and shown with the current address: insert a slide before it
+  and the answer says "slide 5". A label that was the address follows; a written label stays.
+- **Deleted shapes keep their whereabouts.** Every anchor remembers where its shape was ("on slide
+  3, after Content Placeholder 2"), refreshed as the deck changes, so a place whose shape is
+  deleted reads "removed — was on slide 3, after …", struck through; undo of the delete brings it
+  back. Duplicating a shape or a slide duplicates its places into the same topics (the copy gets a
+  fresh hidden key and a new place).
+- **The person's actions are undo steps** in the deck's ordinary history (engine hook
+  `ext::push_step`: the entry holds an identical copy of the presentation, recognised by pointer
+  after `edit.undo`/`edit.redo`, so a layer step never changes slides and a slide step never
+  touches the layer): ask, new topic, places, status, reject, pin, remove note, client data. Undo
+  of a question not yet taken hides it; being worked on, withdraws it (the agent gets a `withdrawn`
+  event and its answer is refused with "this question was withdrawn by the user; drop it");
+  answered, hides the topic with its answer. Redo re-sends, or restores without asking again. The
+  agent's work is not on the person's stack: each piece has Remove or Reject, which is.
+- **The layer format is v2**; v1 decks are migrated on load (one topic per question, notes on an
+  anchor become a For-information topic). **A copy to send** (Overview ▸ Save a Copy to Send…,
+  `agent.copyToSend`) keeps statuses, places and notes and drops the discussion unless the person
+  ticks "Include the discussion".
 
 - **Commands, not side channels.** Everything the layer does is an `agent.*` or `link.*` command
   registered through `deckcraft_engine::ext`, so the UI, the control channel, the CLI and MCP reach
@@ -77,10 +114,12 @@ upstream. Each one accepted upstream removes its lines from the patch.
 - **The Agent tab holds what isn't about one piece of content**, in four groups named the same in
   GridCraft, WordCraft and DeckCraft: *Agent* (the pane, with what is waiting), *Client data*
   (mark/unmark the selection), *Connection* and *Links* (out-of-date count, Check Now, Update
-  Stale). The pane keeps what is about the content: this slide's questions, prepared answers,
-  notes and linked cells, all questions, link details, the history. Under the big buttons a status
-  line says where each stands (`1 ready` / `2 waiting` / `1 in work` / `idle`; links `up to date`
-  / `1 out of date`). The floating status button shows only while the ribbon is collapsed.
+  Stale). The pane keeps what is about the content, in three tabs: **Selection** (what is selected,
+  the topics touching it as cards, the question box at the very bottom), **Overview** (readiness
+  "Agreed 10 of 15 · 2 revise · 3 open" on top, filters, every topic in deck order, the linked
+  cells, a copy to send) and **History**. Under the Agent button the readiness line (`Agreed 3 of 5
+  · 1 new`); links `up to date` / `1 out of date`. The floating status button shows only while the
+  ribbon is collapsed.
 - **Connection: three things only** (the shared spec). *Status*, with **Check** next to it, which
   asks the agent "Is anyone there?" (`agent.ping`): a system question (`kind: "ping"`) that goes
   out through every path a question goes (list_questions, wait_for_questions, `/events`, the
@@ -162,8 +201,9 @@ upstream. Each one accepted upstream removes its lines from the patch.
 - **Keytip A** (Alt, A; F10, A on macOS) opens the Agent tab: DeckCraft has no keytip system of its
   own, so the extension handles the sequence before the app reads the keyboard (the A isn't typed
   into the slide).
-- **Prepared answers are notes of kind `faq` on a slide** — what the agent expects the audience to
-  ask, with the answer. The presenter sees them in the pane and in Presenter View.
+- **Prepared answers are notes of kind `faq` on a slide** (a For-information topic) — what the
+  agent expects the audience to ask, with the answer. The presenter sees them in the topic's card
+  and in Presenter View.
 - **The MCP server runs inside the app** (`http://127.0.0.1:7984/mcp`, Streamable HTTP, JSON
   responses) and reaches the deck through the app's own loopback control channel (7985 by default
   with the layer on; GridCraft keeps 7979, which the links ask). `/events` streams new questions,
@@ -192,14 +232,16 @@ claude mcp add --transport http deckcraft http://127.0.0.1:7984/mcp
 
 and give it the skill in `agent-layer/skill/`. **Claude Desktop / Cowork**: Agent ▸ Connect Cowork
 (or add the entry from `agent-layer/claude_desktop_config.example.json` by hand), then quit Claude
-with ⌘Q and reopen it. Offscreen render with a demo deck (questions,
-prepared answers, client data, a stale linked table):
+with ⌘Q and reopen it. Offscreen render with a demo deck (topics in every status, a removed
+place, prepared answers, client data, a stale linked table):
 
 ```bash
-cargo run -p deckcraft-agent-ui --example agent_snapshot -- --pane slide out.png
+cargo run -p deckcraft-agent-ui --example agent_snapshot -- --pane selection out.png
+cargo run -p deckcraft-agent-ui --example agent_snapshot -- --pane overview out.png
+cargo run -p deckcraft-agent-ui --example agent_snapshot -- --pane topic:8 --slide 3 out.png
 cargo run -p deckcraft-agent-ui --example agent_snapshot -- --hover-link out.png
 cargo run -p deckcraft-agent-ui --example agent_snapshot -- --presenter out.png
-cargo run -p deckcraft-agent-ui --example agent_snapshot -- --agent-tab --pane slide out.png
+cargo run -p deckcraft-agent-ui --example agent_snapshot -- --agent-tab --pane selection out.png
 ```
 
 ## Keeping the fork alive
@@ -227,9 +269,11 @@ Rules that keep it this way:
 
 ## Status
 
-Prototype. Works and tested: questions with live badges (waiting / working / answer ready), the
-in-app MCP server and `/events`, prepared answers per slide (pane and Presenter View), agent notes
-with links, client-data masking in every agent read (tested against leaks through every tool),
+Prototype. Works and tested: topics (TOPICS.md v1: places, statuses, numbering in deck order,
+markers, links inside text that follow the deck, removed places, duplicated places, undo of every
+person action, only a person sets Agreed, v1 migration, a copy to send without the discussion; not
+yet: nested places, TOPICS.md §6), the in-app MCP server and `/events`, prepared answers per slide
+(pane and Presenter View), agent notes with links, client-data masking in every agent read (tested against leaks through every tool),
 refusal of agent writes to client data, decision history and audit trail in the `.pptx`, anchors
 that survive a `.pptx` round trip and slide moves, linked tables and pictures with stale detection
 against a real `.xlsx` (anchor following inserted rows, file moved next to the deck, GridCraft

@@ -1,11 +1,14 @@
 //! The agent layer's UI (a DeckCraft fork feature), plugged in through `deckcraft_ui_egui::ext`:
 //!
-//! - badges on shapes: a question waiting / being worked on / answer ready, agent notes, client
-//!   data, linked cells (current, out of date, source missing); on the slide, its prepared answers;
+//! - topic markers on shapes (`~/aitocraft/TOPICS.md`): a small numbered circle at the shape's top
+//!   right, coloured by the topic's status (blue while the agent works on it, a dot for an unread
+//!   answer); small tags for client data and linked cells;
 //! - hovering a linked table or picture shows where its numbers come from and what changed;
-//! - the Agent pane: ask about the selection, read answers and prepared answers with their links,
-//!   mark client data, linked cells with Update and Open Source, the history, connecting an agent;
-//! - prepared answers under the speaker notes in Presenter View;
+//! - the Agent pane: Selection (the topics of the selection, the question box at the bottom),
+//!   Overview (every topic in deck order, readiness for sign-off, filters, linked cells, a copy to
+//!   send), History;
+//! - in Presenter View: prepared answers under the speaker notes, and the markers on the slide when
+//!   the presenter turns them on;
 //! - context-menu items: Ask the Agent, Mark as Client Data, Paste Linked as Picture, Update from
 //!   Source, Open Source.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
@@ -17,16 +20,17 @@ mod overlay;
 mod pane;
 mod ribbon;
 
+use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use deckcraft_agent::anchor::{self, Index, Place};
-use deckcraft_agent::layer::{self, Layer, QuestionStatus};
-use deckcraft_agent::links;
+use deckcraft_agent::layer::{self, Layer, Status};
+use deckcraft_agent::{links, topics};
 use deckcraft_engine::model::{Presentation, ShapeId};
 use deckcraft_ui_egui::SlideApp;
 use deckcraft_ui_egui::ext::{SlideGeometry, UiExtension};
-use deckcraft_ui_egui::theme::Tokens;
-use egui::{Color32, RichText, Ui, vec2};
+use deckcraft_ui_egui::theme::{self, Tokens};
+use egui::{Color32, CornerRadius, Pos2, Rect, RichText, Stroke, Ui, pos2, vec2};
 use serde_json::json;
 
 static SERVER: OnceLock<String> = OnceLock::new();
@@ -69,8 +73,9 @@ thread_local! {
     static REQUEST: std::cell::RefCell<Option<(bool, String)>> = const { std::cell::RefCell::new(None) };
 }
 
-/// Opens (or closes) the Agent pane on a tab (`slide`, `questions`, `links`, `history`)
-/// from the next frame (on the UI thread).
+/// Opens (or closes) the Agent pane on a tab (`selection`, `overview`, `history`; the old `slide`,
+/// `questions` and `links` still work) or on a topic (`topic:3`, `topic:t5`) from the next frame
+/// (on the UI thread).
 pub fn request_pane(open: bool, tab: &str) {
     REQUEST.with(|r| *r.borrow_mut() = Some((open, tab.to_string())));
 }
@@ -78,10 +83,17 @@ pub fn request_pane(open: bool, tab: &str) {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Tab {
     #[default]
-    Slide,
-    Questions,
-    Links,
+    Selection,
+    Overview,
     History,
+}
+
+/// The Overview's filters (none on: every topic).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Filter {
+    Status(Status),
+    Unread,
+    WithAgent,
 }
 
 #[derive(Default)]
@@ -91,8 +103,22 @@ pub(crate) struct AgentUi {
     /// Draft question for the selection, and whether its box should take focus.
     pub draft: String,
     pub focus_draft: bool,
-    /// A note to scroll to.
+    /// A topic opened from a marker, the Overview or a link (shown first on the Selection tab while
+    /// the selection stays what it was then), and the place or note to point at.
+    pub topic: Option<String>,
+    pub topic_for: Option<(usize, Vec<ShapeId>)>,
+    pub highlight_place: Option<String>,
     pub highlight_note: Option<String>,
+    /// Notes opened, discussions opened or folded by hand.
+    pub open_notes: HashSet<String>,
+    pub discussion: std::collections::HashMap<String, bool>,
+    /// A status being set: topic, status, why.
+    pub status_edit: Option<(String, Status, String)>,
+    pub filters: HashSet<Filter>,
+    /// A copy to send includes the discussion.
+    pub send_discussion: bool,
+    /// Presenter View shows the topic markers (the presenter turns them on).
+    pub presenter_markers: bool,
     /// The document Presenter View shows (it only gets the presentation).
     pub presenter_uid: Option<u64>,
     pub checker: checker::Checker,
@@ -114,6 +140,10 @@ pub(crate) struct Palette {
     pub stale: Color32,
     pub broken: Color32,
     pub linked: Color32,
+    pub open: Color32,
+    pub revise: Color32,
+    pub agreed: Color32,
+    pub info: Color32,
 }
 
 pub(crate) fn palette(t: &Tokens) -> Palette {
@@ -129,7 +159,89 @@ pub(crate) fn palette(t: &Tokens) -> Palette {
         stale: Color32::from_rgb(0xD9, 0x7A, 0x00),
         broken: Color32::from_rgb(0xC6, 0x28, 0x28),
         linked: Color32::from_rgb(0x1E, 0x9E, 0x5A),
+        open: Color32::from_rgb(0xE0, 0x8A, 0x00),
+        revise: Color32::from_rgb(0xD9, 0x30, 0x25),
+        agreed: Color32::from_rgb(0x1E, 0x9E, 0x5A),
+        info: Color32::from_rgb(0x8A, 0x8F, 0x98),
     }
+}
+
+/// A topic status's colour (TOPICS.md §1).
+pub(crate) fn status_color(p: &Palette, s: Status) -> Color32 {
+    match s {
+        Status::Open => p.open,
+        Status::Revise => p.revise,
+        Status::Agreed => p.agreed,
+        Status::Info => p.info,
+    }
+}
+
+/// A topic's marker colour: its status, or blue (pulsing) while the agent works on it.
+pub(crate) fn marker_color(p: &Palette, l: &Layer, t: &layer::Topic, time: f64) -> Color32 {
+    if topics::working(l, t) {
+        let a = 0.65 + 0.35 * (time * 3.0).sin().abs() as f32;
+        return p.working.gamma_multiply(a);
+    }
+    status_color(p, t.status)
+}
+
+/// A marker: a small circle (a pill for `3.2`) with the number, white-rimmed, its right edge at
+/// `right` and its centre at `right.y`; a dot at its top right for an unread answer. Its rect.
+pub(crate) fn marker(painter: &egui::Painter, right: Pos2, label: &str, color: Color32, unread: bool, size: f32) -> Rect {
+    let galley = painter.layout_no_wrap(label.to_string(), theme::bold(size * 0.62), Color32::WHITE);
+    let w = (galley.size().x + size * 0.5).max(size);
+    let r = Rect::from_min_size(pos2(right.x - w, right.y - size / 2.0), vec2(w, size));
+    let round = CornerRadius::same((size / 2.0).round() as u8);
+    painter.rect_filled(r, round, color);
+    painter.rect_stroke(r, round, Stroke::new(1.2, Color32::WHITE), egui::StrokeKind::Outside);
+    painter.galley(pos2(r.center().x - galley.size().x / 2.0, r.center().y - galley.size().y / 2.0), galley, Color32::WHITE);
+    if unread {
+        let c = pos2(r.right() - 1.0, r.top() + 1.0);
+        painter.circle_filled(c, size * 0.2 + 1.2, Color32::WHITE);
+        painter.circle_filled(c, size * 0.2, Color32::from_rgb(0x2D, 0x6C, 0xDF));
+    }
+    r
+}
+
+/// The markers of a slide: for each top-level shape (or `None`, the slide), its places as
+/// (topic id, place id, number, colour, unread), in topic order.
+pub(crate) type Markers = Vec<(Option<ShapeId>, Vec<(String, String, String, Color32, bool)>)>;
+
+pub(crate) fn markers(doc: &Presentation, l: &Layer, slide: usize, p: &Palette, time: f64) -> Markers {
+    let ix = Index::of(doc);
+    let nums = topics::numbers(doc, &ix, l);
+    let top_of = |id: ShapeId| {
+        doc.slides
+            .get(slide)
+            .and_then(|sl| sl.shapes.iter().find(|s| s.id == id || deckcraft_engine::model::find_shape(s.children(), id).is_some()))
+            .map(|s| s.id)
+    };
+    let mut out: Markers = vec![];
+    let mut on = topics::places_on(doc, &ix, l, slide);
+    on.sort_by_key(|(t, _, _)| nums.topic(t));
+    for (tid, pid, ws) in on {
+        let Some(t) = l.topic(&tid) else { continue };
+        let color = marker_color(p, l, t, time);
+        let unread = topics::unread(l, t) > 0;
+        let mut seen: Vec<Option<ShapeId>> = vec![];
+        for w in ws {
+            let at = w.shape.and_then(top_of).or(w.shape);
+            if seen.contains(&at) {
+                continue;
+            }
+            seen.push(at);
+            let entry = (tid.clone(), pid.clone(), nums.place(&pid), color, unread);
+            match out.iter_mut().find(|(k, _)| *k == at) {
+                Some((_, v)) => {
+                    if !v.iter().any(|x| x.0 == tid && x.1 == pid) {
+                        v.push(entry);
+                    }
+                }
+                None => out.push((at, vec![entry])),
+            }
+        }
+    }
+    out
 }
 
 pub(crate) fn state_color(p: &Palette, s: links::State) -> Color32 {
@@ -180,9 +292,42 @@ pub(crate) fn go_to(app: &mut SlideApp, place: &Place) {
     }
 }
 
-/// Follows a link: `slide:3`, `shape:3/12`, `note:n3`, a web page.
+/// Opens a topic on the Selection tab: goes to its place (`place`, or its first one) and shows
+/// the topic first while that stays selected.
+pub(crate) fn open_topic(st: &mut AgentUi, app: &mut SlideApp, tid: &str, place: Option<&str>) {
+    let Some(d) = app.session.active() else { return };
+    let l = layer::get(d);
+    let ix = Index::of(&d.doc);
+    let Some(t) = l.topic(tid) else { return };
+    let mut places: Vec<(topics::Key, Place)> = topics::live(t)
+        .filter(|p| place.is_none_or(|x| x == p.id))
+        .flat_map(|p| topics::resolve(&d.doc, &ix, &l, p))
+        .map(|(_, w)| (topics::key(&d.doc, &w), w))
+        .collect();
+    places.sort_by_key(|(k, _)| *k);
+    if let Some((_, w)) = places.into_iter().next() {
+        go_to(app, &Place { text: String::new(), ..w });
+    }
+    st.open = true;
+    st.tab = Tab::Selection;
+    st.topic = Some(tid.to_string());
+    st.highlight_place = place.map(str::to_string);
+    st.topic_for = app.session.active().map(|d| (d.selection.slide, d.selection.shapes.clone()));
+}
+
+/// Follows a link: `slide:3`, `shape:3/12`, `topic:3`, `place:3.2`, `note:3/n2`, a web page.
 pub(crate) fn follow(st: &mut AgentUi, app: &mut SlideApp, href: &str) {
-    if let Some(n) = href.strip_prefix("slide:").and_then(|n| n.trim().parse::<usize>().ok()).filter(|n| *n >= 1) {
+    if let Some(r) = href.strip_prefix("topic:") {
+        let tid = app.session.active().and_then(|d| topics::find(&d.doc, &Index::of(&d.doc), &layer::get(d), r));
+        if let Some(tid) = tid {
+            open_topic(st, app, &tid, None);
+        }
+    } else if let Some(r) = href.strip_prefix("place:") {
+        let hit = app.session.active().and_then(|d| topics::find_place(&d.doc, &Index::of(&d.doc), &layer::get(d), r));
+        if let Some((tid, pid)) = hit {
+            open_topic(st, app, &tid, Some(&pid));
+        }
+    } else if let Some(n) = href.strip_prefix("slide:").and_then(|n| n.trim().parse::<usize>().ok()).filter(|n| *n >= 1) {
         go_to(app, &Place::slide_only(n - 1));
     } else if let Some((n, id)) = href.strip_prefix("shape:").and_then(|x| x.split_once('/')) {
         if let (Ok(n), Ok(id)) = (n.trim().parse::<usize>(), id.trim().parse::<u32>())
@@ -190,10 +335,16 @@ pub(crate) fn follow(st: &mut AgentUi, app: &mut SlideApp, href: &str) {
         {
             go_to(app, &Place { slide: n - 1, shape: Some(ShapeId(id)), ..Default::default() });
         }
-    } else if let Some(id) = href.strip_prefix("note:") {
+    } else if let Some(r) = href.strip_prefix("note:") {
+        let id = r.rsplit('/').next().unwrap_or(r).to_string();
+        let tid = app.session.active().and_then(|d| layer::get(d).notes.iter().find(|n| n.id == id).map(|n| n.topic.clone()));
+        if let Some(tid) = tid.filter(|t| !t.is_empty()) {
+            open_topic(st, app, &tid, None);
+        }
         st.open = true;
-        st.tab = Tab::Slide;
-        st.highlight_note = Some(id.to_string());
+        st.tab = Tab::Selection;
+        st.open_notes.insert(id.clone());
+        st.highlight_note = Some(id);
     } else if href.starts_with("https://") || href.starts_with("http://") {
         app.open_url(href);
     }
@@ -219,7 +370,7 @@ pub(crate) fn prepared_answers<'a>(doc: &Presentation, l: &'a Layer, slide: usiz
     let ix = Index::of(doc);
     l.notes
         .iter()
-        .filter(|n| n.kind == "faq" && l.anchor(&n.anchor).and_then(|a| anchor::resolve(doc, &ix, a)).is_some_and(|p| p.slide == slide))
+        .filter(|n| n.kind == "faq" && !n.deleted && l.anchor(&n.anchor).and_then(|a| anchor::resolve(doc, &ix, a)).is_some_and(|p| p.slide == slide))
         .collect()
 }
 
@@ -228,11 +379,13 @@ impl UiExtension for AgentUi {
         if let Some((open, tab)) = REQUEST.with(|r| r.borrow_mut().take()) {
             self.open = open;
             self.tab = match tab.as_str() {
-                "questions" => Tab::Questions,
-                "links" => Tab::Links,
+                "overview" | "questions" | "links" => Tab::Overview,
                 "history" => Tab::History,
-                _ => Tab::Slide,
+                _ => Tab::Selection,
             };
+            if let Some(r) = tab.strip_prefix("topic:") {
+                follow(self, app, &format!("topic:{r}"));
+            }
         }
         if let Some(d) = app.session.active() {
             self.presenter_uid = Some(d.uid);
@@ -290,7 +443,7 @@ impl UiExtension for AgentUi {
         ui.separator();
         if ui.button("Ask the Agent…").clicked() {
             self.open = true;
-            self.tab = Tab::Slide;
+            self.tab = Tab::Selection;
             self.focus_draft = true;
             return true;
         }
@@ -328,6 +481,11 @@ impl UiExtension for AgentUi {
 
     fn presenter_notes(&mut self, ui: &mut Ui, doc: &Presentation, slide: usize) {
         let Some(l) = self.presenter_uid.and_then(layer::by_uid) else { return };
+        if topics::visible(&l).next().is_some() {
+            ui.add_space(10.0);
+            let text = RichText::new("Show topic markers on the slide").size(12.0).color(Color32::from_gray(200));
+            ui.checkbox(&mut self.presenter_markers, text).on_hover_text(topics::readiness_text(&l));
+        }
         let faq = prepared_answers(doc, &l, slide);
         if faq.is_empty() {
             return;
@@ -345,23 +503,62 @@ impl UiExtension for AgentUi {
             });
         }
     }
+
+    fn presenter_slide(&mut self, ui: &mut Ui, rect: Rect, doc: &Presentation, slide: usize) {
+        if !self.presenter_markers {
+            return;
+        }
+        let Some(l) = self.presenter_uid.and_then(layer::by_uid) else { return };
+        let t = Tokens::get(ui.ctx());
+        let p = palette(&t);
+        let time = ui.input(|i| i.time);
+        let scale = rect.width() / doc.slide_size.width.max(1.0) as f32;
+        let painter = ui.painter_at(rect.expand(16.0));
+        let sel = deckcraft_engine::Selection { slide, ..Default::default() };
+        let mut pulsing = false;
+        for (shape, list) in markers(doc, &l, slide, &p, time) {
+            let corner = match shape.and_then(|id| doc.slides.get(slide).and_then(|s| s.shapes.iter().find(|x| x.id == id))) {
+                Some(sh) => {
+                    let x = deckcraft_engine::cmd::xfrm_of(doc, &sel, sh);
+                    pos2(rect.left() + (x.x + x.w) as f32 * scale, rect.top() + x.y as f32 * scale)
+                }
+                None => pos2(rect.right() - 6.0, rect.top() + 14.0),
+            };
+            let mut right = corner;
+            for (tid, _, label, color, unread) in &list {
+                pulsing |= l.topic(tid).is_some_and(|t| topics::working(&l, t));
+                let r = marker(&painter, pos2(right.x + 8.0, right.y), label, *color, *unread, 16.0);
+                right.x = r.left() - 3.0 - 8.0;
+            }
+        }
+        if pulsing {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(60));
+        }
+    }
 }
 
-/// Presenter View's prepared-answers section for a document (what the hook draws), for
-/// offscreen renders and tests.
+/// Presenter View's notes section for a document (what the hook draws: the markers toggle, turned
+/// on, and the prepared answers), for offscreen renders and tests.
 pub fn presenter_preview(ui: &mut Ui, doc: &Presentation, slide: usize, uid: u64) {
-    let mut st = AgentUi { presenter_uid: Some(uid), ..Default::default() };
+    let mut st = AgentUi { presenter_uid: Some(uid), presenter_markers: true, ..Default::default() };
     st.presenter_notes(ui, doc, slide);
 }
 
+/// The markers Presenter View draws over the slide's picture in `rect` (when the presenter turned
+/// them on), for offscreen renders and tests.
+pub fn presenter_slide_preview(ui: &mut Ui, rect: Rect, doc: &Presentation, slide: usize, uid: u64) {
+    let mut st = AgentUi { presenter_uid: Some(uid), presenter_markers: true, ..Default::default() };
+    st.presenter_slide(ui, rect, doc, slide);
+}
+
 impl AgentUi {
-    /// The always-there Agent button at the bottom right of the canvas, with what is waiting.
+    /// The always-there Agent button at the bottom right of the canvas (while the ribbon is
+    /// collapsed), with readiness for sign-off or what is waiting.
     fn launcher(&mut self, app: &mut SlideApp, ctx: &egui::Context) {
         let Some(canvas) = app.canvas_rect else { return };
         let Some(d) = app.session.active() else { return };
         let l = layer::get(d);
-        let ready = l.asked().filter(|q| q.status == QuestionStatus::Answered && !q.seen).count();
-        let waiting = l.asked().filter(|q| q.status != QuestionStatus::Answered).count();
+        let ready: usize = topics::visible(&l).map(|t| topics::unread(&l, t)).sum();
         let stale = links::all(&d.doc)
             .iter()
             .filter(|(_, _, k)| {
@@ -371,16 +568,26 @@ impl AgentUi {
         let t = Tokens::get(ctx);
         let p = palette(&t);
         let plural = |n: usize| if n == 1 { "" } else { "s" };
-        let (text, color, tab) = if ready > 0 {
-            (format!("{ready} answer{} ready", plural(ready)), p.answered, Tab::Questions)
+        let (all, agreed, revise, open, info) = topics::readiness(&l);
+        let (text, color) = if ready > 0 {
+            (format!("{ready} answer{} ready", plural(ready)), p.answered)
         } else if stale > 0 {
-            (format!("{stale} linked table{} out of date", plural(stale)), p.stale, Tab::Links)
-        } else if waiting > 0 {
-            (format!("{waiting} question{} with the agent", plural(waiting)), p.pending, Tab::Questions)
+            (format!("{stale} linked table{} out of date", plural(stale)), p.stale)
+        } else if all > 0 {
+            let color = if revise > 0 {
+                p.revise
+            } else if open > 0 {
+                p.open
+            } else if agreed + info == all {
+                p.agreed
+            } else {
+                t.accent
+            };
+            (topics::readiness_text(&l), color)
         } else {
-            ("Agent".to_string(), t.accent, Tab::Slide)
+            ("Agent".to_string(), t.accent)
         };
-        if self.open && ready == 0 && waiting == 0 && stale == 0 {
+        if self.open && ready == 0 && stale == 0 {
             return;
         }
         let pos = egui::pos2(canvas.right() - 14.0, canvas.bottom() - 14.0);
@@ -392,9 +599,9 @@ impl AgentUi {
                     .corner_radius(12.0)
                     .min_size(vec2(0.0, 26.0))
                     .wrap_mode(egui::TextWrapMode::Extend);
-                if ui.add(b).on_hover_text("Questions, answers, notes and linked cells").clicked() {
+                if ui.add(b).on_hover_text("Topics, answers, notes and linked cells").clicked() {
                     self.open = true;
-                    self.tab = tab;
+                    self.tab = Tab::Overview;
                 }
             },
         );

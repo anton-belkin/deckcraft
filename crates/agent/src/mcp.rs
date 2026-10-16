@@ -20,7 +20,7 @@ decisions (log_decision). Change the deck only with run_command, giving a reason
 from spreadsheet cells: list_links shows their source and whether the numbers there changed since they were pasted. PRIVACY: \
 text the user marked as client data shows as pseudonyms like [client-3] wherever it appears; the same text always gets the \
 same pseudonym. Never present a pseudonym as real, never guess what it stands for, and never write it into the deck as if it \
-were a name. You cannot change shapes holding client data. A question with kind \"ping\" is a connection check: answer it at once with \"here\", don't investigate.";
+were a name. You cannot change shapes holding client data. A question with kind \"ping\" is a connection check: answer it at once with \"here\", don't investigate. Questions belong to topics (list_topics, get_topic): link inside the text ([slide 4](slide:4), [3.2](place:3.2)); add places that a change here affects (add_places); leave notes that will still matter after the chat (add_note with the topic); never mark Agreed, propose it (propose_agreed).";
 
 fn tool(name: &str, desc: &str, props: Value, required: &[&str], read_only: bool) -> Value {
     json!({
@@ -65,9 +65,12 @@ pub fn tools() -> Vec<Value> {
 
 fn base_tools() -> Vec<Value> {
     let mut note_props = serde_json::Map::new();
-    note_props.insert("text".into(), s("The note (for faq: the prepared answer)"));
+    note_props.insert("topic".into(), json!({"type": ["integer", "string"], "description": "The topic (its number or id); without it, the note starts a topic on its slide or shape (For information)"}));
+    note_props.insert("text".into(), s("The note, with links inside the text: [slide 4](slide:4), [3.2](place:3.2) (for faq: the prepared answer)"));
     note_props.insert("title".into(), s("Short title (for faq: the question the audience may ask)"));
-    note_props.insert("kind".into(), json!({"type": "string", "enum": ["faq", "explanation", "assumption", "source", "check"]}));
+    note_props.insert("kind".into(), json!({"type": "string", "enum": ["explanation", "source", "assumption", "decision", "faq", "check"]}));
+    note_props.insert("url".into(), s("For a source: its address"));
+    note_props.insert("summary".into(), s("For a source: what is behind the link, in a line"));
     note_props.insert("links".into(), links());
     target(&mut note_props);
     let mut decision_props = serde_json::Map::new();
@@ -126,9 +129,51 @@ fn base_tools() -> Vec<Value> {
         ),
         tool(
             "add_note",
-            "Leave a note on a slide or a shape: a prepared answer to a question the audience is likely to ask (kind faq: title = the question), why it is done this way (explanation), an assumption, a source with a summary, or a check you made.",
+            "Leave a note in a topic that will still matter after the chat: why it is done this way (explanation), a source (url + summary), an assumption, a decision; or start a topic on a slide or shape with a prepared answer to a question the audience is likely to ask (kind faq: title = the question).",
             Value::Object(note_props),
             &["text"],
+            false,
+        ),
+        tool(
+            "list_topics",
+            "The deck's topics in deck order: number, status and its text, places (where they are now), note titles, unread answers; plus readiness for sign-off.",
+            json!({"status": {"type": "string", "enum": ["open", "revise", "agreed", "info"]}}),
+            &[],
+            true,
+        ),
+        tool(
+            "get_topic",
+            "Everything about a topic: places, status, notes, the discussion.",
+            json!({"topic": json!({"type": ["integer", "string"], "description": "Its number or id"})}),
+            &["topic"],
+            true,
+        ),
+        tool(
+            "add_places",
+            "Attach places a change here affects to the same topic, each with a short reason (\"depends on 3.1: same revenue figure\"), so the dependency shows on the deck.",
+            json!({"topic": json!({"type": ["integer", "string"]}), "places": {"type": "array", "items": {"type": "object", "properties": {"slide": n("Slide number"), "shape": json!({"type": ["integer", "string"], "description": "Shape id or name"}), "shapes": {"type": "array", "items": {"type": ["integer", "string"]}}, "words": s("Words in the shape's text"), "reason": s("Why this place belongs to the topic")}, "required": ["slide"]}}}),
+            &["topic", "places"],
+            false,
+        ),
+        tool(
+            "widen_place",
+            "Widen a place to what the answer is really about (the whole table, several shapes, the slide), and say why.",
+            json!({"place": s("The place: its number (3.2) or id"), "to": {"type": "object", "properties": {"slide": n("Slide number"), "shape": json!({"type": ["integer", "string"]}), "shapes": {"type": "array", "items": {"type": ["integer", "string"]}}, "words": s("Words")}, "required": ["slide"]}, "reason": s("Why")}),
+            &["place", "to"],
+            false,
+        ),
+        tool(
+            "set_status",
+            "Set a topic's status with its text: open (a question, no decision), revise (something here must change), info (nothing to decide). Agreed is the person's: use propose_agreed.",
+            json!({"topic": json!({"type": ["integer", "string"]}), "status": {"type": "string", "enum": ["open", "revise", "info"]}, "text": s("Why, with links inside the text")}),
+            &["topic", "status"],
+            false,
+        ),
+        tool(
+            "propose_agreed",
+            "Suggest that a topic is settled, with your reasons; the person confirms with one click.",
+            json!({"topic": json!({"type": ["integer", "string"]}), "reasons": s("Why it can be agreed, with links")}),
+            &["topic", "reasons"],
             false,
         ),
         tool("log_decision", "Record a decision in the deck's history (why it is the way it is).", Value::Object(decision_props), &["text"], false),
@@ -220,7 +265,15 @@ pub fn call(b: &mut dyn Backend, name: &str, args: &Value) -> Result<Value, Stri
         }
         "claim_question" => exec(b, &scope, "agent.claim", pick(args, &["id"])),
         "answer_question" => exec(b, &scope, "agent.answer", pick(args, &["id", "text", "links"])),
-        "add_note" => exec(b, &scope, "agent.note", pick(args, &["text", "title", "kind", "links", "slide", "shape", "words"])),
+        "add_note" => {
+            exec(b, &scope, "agent.note", pick(args, &["topic", "text", "title", "kind", "url", "summary", "links", "slide", "shape", "words"]))
+        }
+        "list_topics" => exec(b, &scope, "agent.topics", pick(args, &["status"])),
+        "get_topic" => exec(b, &scope, "agent.topic", pick(args, &["topic"])),
+        "add_places" => exec(b, &scope, "agent.addPlaces", pick(args, &["topic", "places"])),
+        "widen_place" => exec(b, &scope, "agent.widenPlace", pick(args, &["place", "to", "reason"])),
+        "set_status" => exec(b, &scope, "agent.setStatus", pick(args, &["topic", "status", "text"])),
+        "propose_agreed" => exec(b, &scope, "agent.proposeAgreed", pick(args, &["topic", "reasons"])),
         "log_decision" => exec(b, &scope, "agent.decision", pick(args, &["text", "source", "slide", "shape", "words"])),
         "get_layer" => exec(b, &scope, "agent.layer", json!({})),
         "run_command" => exec(b, &scope, "agent.exec", pick(args, &["command", "params", "reason", "source"])),

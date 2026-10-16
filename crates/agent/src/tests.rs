@@ -73,7 +73,10 @@ fn a_question_goes_from_waiting_to_answered() {
     let q = l.questions.iter().find(|q| q.id == qid).unwrap();
     assert_eq!(q.status, QuestionStatus::Answered);
     assert!(!q.seen);
-    assert_eq!(q.answer.as_ref().unwrap().links.len(), 1);
+    // `links` became a sentence of links inside the text, stored as an anchor.
+    let text = &q.answer.as_ref().unwrap().text;
+    // "Slide 2" was the address: stored empty, shown as the current address.
+    assert!(text.contains("Sources: [](anchor:"), "{text}");
     run(&mut s, "agent.seen", json!({"id": qid}));
     assert!(crate::active_layer(&s).unwrap().questions[0].seen);
 }
@@ -927,4 +930,321 @@ fn a_stale_check_drops_out_and_polls_are_not_tool_calls() {
     assert!(!crate::counts_as_call(&json!({"waiting": true})));
     assert!(crate::counts_as_call(&json!({"id": "q1"})));
     crate::listener::set_ping(None);
+}
+
+// ---------------------------------------------------------------- topics (TOPICS.md)
+
+fn number(s: &Session, tid: &str) -> usize {
+    let d = s.doc().unwrap();
+    crate::topics::numbers_of(d, &crate::active_layer(s).unwrap()).topic(tid)
+}
+
+#[test]
+fn a_question_starts_a_topic_and_a_second_one_on_the_shape_joins_it() {
+    let (mut s, client, numbers) = deck();
+    let q1 = run(&mut s, "agent.ask", json!({"text": "Source of 18.4M?", "slide": 2, "shape": numbers.0}));
+    let t = q1["topicId"].as_str().unwrap().to_string();
+    let l = crate::active_layer(&s).unwrap();
+    let topic = l.topic(&t).unwrap();
+    assert_eq!(topic.status, layer::Status::Open, "the first question opens it");
+    assert_eq!(topic.places.len(), 1);
+    let q2 = run(&mut s, "agent.ask", json!({"text": "And the 42%?", "slide": 2, "shape": numbers.0}));
+    assert_eq!(q2["topicId"], t.as_str(), "a follow-up on the same place joins the topic");
+    let q3 = run(&mut s, "agent.ask", json!({"text": "Separate thing", "slide": 2, "shape": numbers.0, "new": true}));
+    assert_ne!(q3["topicId"], t.as_str(), "New topic starts another");
+    // Numbering follows deck order: a topic on the client line (above the numbers) is number 1.
+    let q4 = run(&mut s, "agent.ask", json!({"text": "Legal name?", "slide": 2, "shape": client.0}));
+    let t4 = q4["topicId"].as_str().unwrap();
+    assert_eq!(number(&s, t4), 1);
+    assert_eq!(number(&s, &t), 2);
+    // Questions carry their topic, so a follow-up is answered in context.
+    let qs = run(&mut s, "agent.questions", json!({"status": "pending", "actor": "agent"}));
+    let one = qs.as_array().unwrap().iter().find(|q| q["id"] == q2["id"]).unwrap().clone();
+    assert_eq!(one["topic"]["id"], t.as_str());
+    assert_eq!(one["topic"]["number"], 2);
+    assert_eq!(one["topic"]["status"], "open");
+}
+
+#[test]
+fn links_inside_text_become_anchors_and_follow_the_slides() {
+    let (mut s, _, numbers) = deck();
+    let qid = run(&mut s, "agent.ask", json!({"text": "Why?", "slide": 2, "shape": numbers.0}))["id"].as_str().unwrap().to_string();
+    run(&mut s, "agent.claim", json!({"id": qid, "actor": "agent"}));
+    run(
+        &mut s,
+        "agent.answer",
+        json!({"id": qid, "actor": "agent", "text": "See [slide 3](slide:3) and slide 2; the number is [here](shape:2/" .to_string() + &numbers.0.to_string() + ")."}),
+    );
+    let stored = crate::active_layer(&s).unwrap().questions.iter().find(|q| q.id == qid).unwrap().answer.clone().unwrap().text;
+    assert!(stored.contains("[](anchor:") && !stored.contains("slide:3"), "stored as anchors: {stored}");
+    // A slide inserted before them: the answer now says slide 4 and slide 3, and still leads there.
+    run(&mut s, "slide.go", json!({"index": 0}));
+    run(&mut s, "slide.new", json!({"layout": "blank"}));
+    let qs = run(&mut s, "agent.questions", json!({"actor": "agent"}));
+    let text = qs.as_array().unwrap().iter().find(|q| q["id"] == qid.as_str()).unwrap()["answer"]["text"].as_str().unwrap().to_string();
+    assert!(text.contains("[slide 4](slide:4)"), "{text}");
+    assert!(text.contains("[slide 3](slide:3)"), "{text}");
+    assert!(text.contains(&format!("[here](shape:3/{})", numbers.0)), "{text}");
+}
+
+#[test]
+fn only_a_person_sets_agreed_and_the_agent_proposes_it() {
+    let (mut s, _, numbers) = deck();
+    let t = run(&mut s, "agent.ask", json!({"text": "OK?", "slide": 2, "shape": numbers.0}))["topicId"].as_str().unwrap().to_string();
+    let e = s.execute("agent.setStatus", &json!({"topic": t, "status": "agreed", "actor": "agent"})).unwrap_err();
+    assert!(e.to_string().contains("only a person sets Agreed"), "{e}");
+    run(&mut s, "agent.setStatus", json!({"topic": t, "status": "revise", "text": "the base year is wrong", "actor": "agent"}));
+    run(&mut s, "agent.proposeAgreed", json!({"topic": t, "reasons": "Checked against slide 3", "actor": "agent"}));
+    assert!(s.execute("agent.confirmAgreed", &json!({"topic": t, "actor": "agent"})).is_err());
+    run(&mut s, "agent.confirmAgreed", json!({"topic": t}));
+    let l = crate::active_layer(&s).unwrap();
+    let topic = l.topic(&t).unwrap();
+    assert_eq!(topic.status, layer::Status::Agreed);
+    assert_eq!(topic.status_by, crate::Actor::Human);
+    assert!(topic.proposal.is_empty());
+    // Every status change is in the log with who made it.
+    let who: Vec<(crate::Actor, &str)> = l.log.iter().filter(|e| e.text.starts_with("Status")).map(|e| (e.actor, e.text.as_str())).collect();
+    assert!(who.iter().any(|(a, t)| *a == crate::Actor::Agent && t.contains("Revise")));
+    assert!(who.iter().any(|(a, t)| *a == crate::Actor::Human && t.contains("Agreed")));
+}
+
+#[test]
+fn the_agent_adds_and_widens_places_and_the_person_can_reject_them() {
+    let (mut s, client, numbers) = deck();
+    let t = run(&mut s, "agent.ask", json!({"text": "Margin?", "slide": 2, "shape": numbers.0}))["topicId"].as_str().unwrap().to_string();
+    let r = run(
+        &mut s,
+        "agent.addPlaces",
+        json!({"topic": t, "actor": "agent", "places": [{"slide": 2, "shape": client.0, "reason": "the client named on slide 2 sets the fee"}]}),
+    );
+    let pid = r["places"][0]["id"].as_str().unwrap().to_string();
+    let topic = s.execute("agent.topic", &json!({"topic": t})).unwrap();
+    assert_eq!(topic["places"].as_array().unwrap().len(), 2);
+    let labels: Vec<&str> = topic["places"].as_array().unwrap().iter().map(|p| p["place"].as_str().unwrap()).collect();
+    assert!(labels.contains(&"1.1") && labels.contains(&"1.2"), "places numbered in deck order: {labels:?}");
+    // Widen the first place to both shapes.
+    let first = topic["places"][0]["id"].as_str().unwrap().to_string();
+    run(
+        &mut s,
+        "agent.widenPlace",
+        json!({"place": first, "to": {"slide": 2, "shapes": [client.0, numbers.0]}, "reason": "the whole cover", "actor": "agent"}),
+    );
+    let topic = s.execute("agent.topic", &json!({"topic": t})).unwrap();
+    assert!(topic["places"].as_array().unwrap().iter().any(|p| p["shapes"].as_array().is_some_and(|a| a.len() == 2)));
+    // The person rejects the agent's place; undo brings it back.
+    run(&mut s, "agent.rejectPlace", json!({"place": pid}));
+    assert_eq!(s.execute("agent.topic", &json!({"topic": t})).unwrap()["places"].as_array().unwrap().len(), 1);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.execute("agent.topic", &json!({"topic": t})).unwrap()["places"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn a_deleted_shape_keeps_its_whereabouts_and_undo_brings_it_back() {
+    let (mut s, _, numbers) = deck();
+    let t = run(&mut s, "agent.ask", json!({"text": "Why?", "slide": 2, "shape": numbers.0}))["topicId"].as_str().unwrap().to_string();
+    run(&mut s, "selection.select", json!({"ids": [numbers.0]}));
+    run(&mut s, "edit.delete", json!({}));
+    let topic = s.execute("agent.topic", &json!({"topic": t})).unwrap();
+    let w = topic["places"][0]["where"].as_str().unwrap();
+    assert!(topic["places"][0]["removed"] == true, "{topic}");
+    assert!(w.starts_with("removed — was on slide 2, after TextBox"), "{w}");
+    run(&mut s, "edit.undo", json!({}));
+    let topic = s.execute("agent.topic", &json!({"topic": t})).unwrap();
+    assert!(topic["places"][0].get("removed").is_none(), "back as it was: {topic}");
+    assert_eq!(topic["places"][0]["shape"], numbers.0);
+}
+
+#[test]
+fn duplicating_a_shape_or_a_slide_duplicates_its_places() {
+    let (mut s, _, numbers) = deck();
+    let t = run(&mut s, "agent.ask", json!({"text": "Why?", "slide": 2, "shape": numbers.0}))["topicId"].as_str().unwrap().to_string();
+    run(&mut s, "selection.select", json!({"ids": [numbers.0]}));
+    run(&mut s, "edit.duplicate", json!({}));
+    let places = |s: &mut Session| s.execute("agent.topic", &json!({"topic": t})).unwrap()["places"].as_array().unwrap().clone();
+    let ps = places(&mut s);
+    assert_eq!(ps.len(), 2, "the copy is a place of the same topic: {ps:?}");
+    assert_ne!(ps[0]["shape"], ps[1]["shape"]);
+    // Undo of the duplicate takes the copy's place away again.
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(places(&mut s).len(), 1);
+    // A duplicated slide brings its places along.
+    run(&mut s, "slide.duplicate", json!({"index": 1}));
+    let ps = places(&mut s);
+    assert_eq!(ps.len(), 2, "{ps:?}");
+    let slides: Vec<i64> = ps.iter().map(|p| p["slide"].as_i64().unwrap()).collect();
+    assert!(slides.contains(&2) && slides.contains(&3), "{slides:?}");
+}
+
+#[test]
+fn undo_of_a_question_follows_where_the_agent_is() {
+    let (mut s, _, numbers) = deck();
+    // Not yet taken: undo removes it and its topic; redo sends it again.
+    let q = run(&mut s, "agent.ask", json!({"text": "One?", "slide": 2, "shape": numbers.0}));
+    let (qid, t) = (q["id"].as_str().unwrap().to_string(), q["topicId"].as_str().unwrap().to_string());
+    run(&mut s, "edit.undo", json!({}));
+    assert!(run(&mut s, "agent.questions", json!({"status": "pending", "actor": "agent"})).as_array().unwrap().is_empty());
+    assert!(run(&mut s, "agent.topics", json!({}))["topics"].as_array().unwrap().is_empty());
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(run(&mut s, "agent.questions", json!({"status": "pending", "actor": "agent"})).as_array().unwrap().len(), 1);
+    // Being worked on: undo withdraws it, and the agent's answer is refused.
+    run(&mut s, "agent.claim", json!({"id": qid, "actor": "agent"}));
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(run(&mut s, "agent.questions", json!({"status": "withdrawn", "actor": "agent"})).as_array().unwrap().len(), 1);
+    let e = s.execute("agent.answer", &json!({"id": qid, "text": "x", "actor": "agent"})).unwrap_err();
+    assert!(e.to_string().contains("withdrawn by the user"), "{e}");
+    // Redo sends it again.
+    run(&mut s, "edit.redo", json!({}));
+    run(&mut s, "agent.claim", json!({"id": qid, "actor": "agent"}));
+    run(&mut s, "agent.answer", json!({"id": qid, "text": "Because.", "actor": "agent"}));
+    // Answered: undo hides the topic with its answer; redo restores it as it was, without asking again.
+    run(&mut s, "edit.undo", json!({}));
+    assert!(run(&mut s, "agent.topics", json!({}))["topics"].as_array().unwrap().is_empty());
+    run(&mut s, "edit.redo", json!({}));
+    let topic = s.execute("agent.topic", &json!({"topic": t})).unwrap();
+    assert_eq!(topic["discussion"][0]["answer"], "Because.");
+    assert_eq!(topic["discussion"][0]["status"], "answered");
+    // Undoing a slide edit never touches the layer, and a layer step never touches the slides.
+    let slides = s.doc().unwrap().doc.slides.len();
+    run(&mut s, "slide.new", json!({"layout": "blank"}));
+    run(&mut s, "agent.setStatus", json!({"topic": t, "status": "info", "text": "noted"}));
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc().unwrap().doc.slides.len(), slides + 1, "the status step left the slides alone");
+    assert_eq!(crate::active_layer(&s).unwrap().topic(&t).unwrap().status, layer::Status::Open);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc().unwrap().doc.slides.len(), slides);
+    assert!(!crate::active_layer(&s).unwrap().topic(&t).unwrap().hidden, "the slide undo left the topic alone");
+}
+
+#[test]
+fn the_persons_layer_actions_are_undoable_but_the_agents_are_not() {
+    let (mut s, client, numbers) = deck();
+    run(&mut s, "agent.private", json!({"slide": 2, "shape": client.0}));
+    assert_eq!(crate::active_layer(&s).unwrap().private.len(), 1);
+    run(&mut s, "edit.undo", json!({}));
+    assert!(crate::active_layer(&s).unwrap().private.is_empty(), "marking client data is undoable");
+    let undo_len = s.doc().unwrap().history.undo.len();
+    let n = run(
+        &mut s,
+        "agent.note",
+        json!({"slide": 2, "shape": numbers.0, "kind": "source", "title": "Pack", "text": "p. 4", "url": "https://example.com", "summary": "Q3 pack", "actor": "agent"}),
+    );
+    assert_eq!(s.doc().unwrap().history.undo.len(), undo_len, "the agent's note isn't on the person's stack");
+    let nid = n["id"].as_str().unwrap().to_string();
+    run(&mut s, "agent.pinNote", json!({"id": nid}));
+    run(&mut s, "agent.removeNote", json!({"id": nid}));
+    assert!(crate::active_layer(&s).unwrap().notes.iter().find(|x| x.id == nid).unwrap().deleted);
+    run(&mut s, "edit.undo", json!({}));
+    let note = crate::active_layer(&s).unwrap().notes.iter().find(|x| x.id == nid).unwrap().clone();
+    assert!(!note.deleted && note.pinned);
+    run(&mut s, "edit.undo", json!({}));
+    assert!(!crate::active_layer(&s).unwrap().notes.iter().find(|x| x.id == nid).unwrap().pinned);
+}
+
+#[test]
+fn version_1_decks_become_topics() {
+    let mut l = layer::Layer {
+        version: 1,
+        anchors: vec![
+            layer::Anchor { id: "a1".into(), slide_key: "k1".into(), ..Default::default() },
+            layer::Anchor { id: "a2".into(), slide_key: "k2".into(), ..Default::default() },
+        ],
+        questions: vec![
+            layer::Question { id: "q1".into(), anchor: "a1".into(), text: "Open one".into(), ..Default::default() },
+            layer::Question {
+                id: "q2".into(),
+                anchor: "a1".into(),
+                text: "Read one".into(),
+                status: QuestionStatus::Answered,
+                seen: true,
+                answer: Some(layer::Answer { text: "A".into(), ..Default::default() }),
+                ..Default::default()
+            },
+        ],
+        notes: vec![
+            layer::Note { id: "n1".into(), anchor: "a2".into(), text: "x".into(), ..Default::default() },
+            layer::Note { id: "n2".into(), anchor: "a2".into(), text: "y".into(), ..Default::default() },
+        ],
+        ..Default::default()
+    };
+    l.migrate();
+    assert_eq!(l.version, layer::VERSION);
+    assert_eq!(l.topics.len(), 3, "one per question, one for the notes on an anchor");
+    let t1 = l.topic(&l.questions[0].topic).unwrap();
+    assert_eq!(t1.status, layer::Status::Open);
+    assert_eq!(t1.places[0].anchors, vec!["a1".to_string()]);
+    assert_eq!(l.topic(&l.questions[1].topic).unwrap().status, layer::Status::Info, "answered and read");
+    assert_eq!(l.notes[0].topic, l.notes[1].topic);
+    assert_eq!(l.topic(&l.notes[0].topic).unwrap().status, layer::Status::Info);
+    // And a v1 part in a file loads as v2.
+    let mut doc = deckcraft_engine::model::Presentation::default();
+    let v1 = layer::Layer {
+        version: 1,
+        questions: vec![layer::Question { id: "q1".into(), anchor: "a1".into(), text: "Q".into(), ..Default::default() }],
+        anchors: l.anchors.clone(),
+        ..Default::default()
+    };
+    layer::write_into(&mut doc, &v1);
+    // write_into stamps the current version: write the old one by hand.
+    let xml = doc.kept_parts[0].xml.replace("\"version\":2", "\"version\":1");
+    doc.kept_parts[0].xml = xml;
+    let back = layer::read_from(&doc);
+    assert_eq!(back.version, layer::VERSION);
+    assert_eq!(back.topics.len(), 1);
+}
+
+#[test]
+fn readiness_counts_for_sign_off() {
+    let (mut s, client, numbers) = deck();
+    let a = run(&mut s, "agent.ask", json!({"text": "1", "slide": 2, "shape": numbers.0}))["topicId"].as_str().unwrap().to_string();
+    let b = run(&mut s, "agent.ask", json!({"text": "2", "slide": 2, "shape": client.0}))["topicId"].as_str().unwrap().to_string();
+    run(&mut s, "agent.setStatus", json!({"topic": a, "status": "agreed", "text": "fine"}));
+    run(&mut s, "agent.setStatus", json!({"topic": b, "status": "revise"}));
+    run(&mut s, "agent.note", json!({"slide": 3, "kind": "faq", "title": "Q?", "text": "A.", "actor": "agent"}));
+    let r = run(&mut s, "agent.topics", json!({}));
+    assert_eq!(r["readiness"], "Agreed 1 of 2 · 1 revise · 1 for information");
+}
+
+#[test]
+fn a_stale_link_raises_its_topics_to_revise() {
+    let (mut s, _, _) = deck();
+    let dir = temp_dir("stale-topic");
+    let book = dir.join("model.xlsx");
+    std::fs::write(&book, workbook(1_250_000.0, false)).unwrap();
+    let id = run(&mut s, "link.paste", json!({"payload": payload(book.to_str().unwrap())}))["id"].as_u64().unwrap();
+    let t = run(&mut s, "agent.ask", json!({"text": "Right numbers?", "slide": 2, "shape": id}))["topicId"].as_str().unwrap().to_string();
+    run(&mut s, "agent.setStatus", json!({"topic": t, "status": "info"}));
+    std::fs::write(&book, workbook(1_310_000.0, false)).unwrap();
+    run(&mut s, "link.check", json!({"gridcraft": false}));
+    let l = crate::active_layer(&s).unwrap();
+    let topic = l.topic(&t).unwrap();
+    assert_eq!(topic.status, layer::Status::Revise);
+    assert_eq!(topic.status_by, crate::Actor::App);
+    // The person looked and agreed: the next check of the same change doesn't overrule them.
+    run(&mut s, "agent.setStatus", json!({"topic": t, "status": "agreed"}));
+    run(&mut s, "link.check", json!({"gridcraft": false}));
+    assert_eq!(crate::active_layer(&s).unwrap().topic(&t).unwrap().status, layer::Status::Agreed);
+}
+
+#[test]
+fn a_sent_copy_keeps_statuses_and_notes_but_not_the_discussion() {
+    let (mut s, _, numbers) = deck();
+    let q = run(&mut s, "agent.ask", json!({"text": "Is 18.4M audited?", "slide": 2, "shape": numbers.0}));
+    let (qid, t) = (q["id"].as_str().unwrap().to_string(), q["topicId"].as_str().unwrap().to_string());
+    run(&mut s, "agent.claim", json!({"id": qid, "actor": "agent"}));
+    run(&mut s, "agent.answer", json!({"id": qid, "text": "No, management accounts.", "actor": "agent"}));
+    run(&mut s, "agent.note", json!({"topic": t, "kind": "source", "title": "Q3 pack", "text": "p. 4", "actor": "agent"}));
+    run(&mut s, "agent.setStatus", json!({"topic": t, "status": "info", "text": "unaudited, said so"}));
+    let read = |data: &Json| {
+        let mut t = Session::new();
+        run(&mut t, "file.openBytes", json!({"name": "sent.pptx", "data": data["data"]}));
+        crate::active_layer(&t).unwrap()
+    };
+    let l = read(&run(&mut s, "agent.copyToSend", json!({})));
+    assert_eq!(l.topics.len(), 1);
+    assert_eq!(l.topics[0].status_text, "unaudited, said so");
+    assert_eq!(l.notes.len(), 1);
+    assert!(l.questions.is_empty(), "no discussion");
+    assert!(l.log.iter().all(|e| !e.text.contains("audited?")));
+    let l = read(&run(&mut s, "agent.copyToSend", json!({"discussion": true})));
+    assert_eq!(l.questions.len(), 1, "included when asked");
 }

@@ -13,7 +13,7 @@ use deckcraft_engine::{EngineError, Result, Session, Target};
 use serde_json::{Value as Json, json};
 
 use crate::anchor::{self, Index, Place, shape_label};
-use crate::layer::{self, Actor, Answer, Layer, Link, Note, Question, QuestionStatus};
+use crate::layer::{self, Actor, Layer, Link, Question, QuestionStatus};
 use crate::links;
 use crate::privacy::{self, Masker};
 use crate::{bad, now_ms};
@@ -32,10 +32,21 @@ macro_rules! spec {
 
 pub static SPECS: &[CommandSpec] = &[
     // the presenter's side
-    spec!(change "agent.ask", "Ask the Agent", "{text, slide?, shape?, words?, cell?} (default: the selection)", has_slide, ask),
+    spec!(change "agent.ask", "Ask the Agent", "{text, slide?, shape?, words?, cell?, topic?, new?: bool} (default: the selection) — joins the topic the place has, or starts one → {id, topic}", has_slide, crate::topic_cmds::ask),
+    spec!(change "agent.newTopic", "New Topic", "{slide?, shape?, words?} (default: the selection)", has_slide, crate::topic_cmds::new_topic),
+    spec!(change "agent.setStatus", "Set Status", "{topic, status: open|revise|agreed|info, text?} — only a person sets agreed", has_doc, crate::topic_cmds::set_status),
+    spec!(change "agent.proposeAgreed", "Propose Agreed", "{topic, reasons} — the agent's suggestion; the person confirms", has_doc, crate::topic_cmds::propose_agreed),
+    spec!(change "agent.confirmAgreed", "Confirm Agreed", "{topic} — accepts the agent's proposal", has_doc, crate::topic_cmds::confirm_agreed),
+    spec!(change "agent.addPlaces", "Add Places", "{topic, places: [{slide, shape?|shapes?, words?, reason?}]}", has_slide, crate::topic_cmds::add_places),
+    spec!(change "agent.widenPlace", "Widen Place", "{place: id|3.2, to: {slide, shape?|shapes?, words?}, reason?}", has_slide, crate::topic_cmds::widen_place),
+    spec!(change "agent.rejectPlace", "Reject Place", "{place}", has_doc, crate::topic_cmds::reject_place),
+    spec!(change "agent.pinNote", "Pin Note", "{id, on?: bool}", has_doc, crate::topic_cmds::pin_note),
+    spec!(query "agent.copyToSend", "Copy to Send", "{path?, format?: pptx|deckcraft, discussion?: bool (default false)} — a copy of the deck with topics, statuses and notes, without the discussion", has_doc, crate::topic_cmds::copy_to_send),
+    spec!(query "agent.topics", "Topics", "{status?} → topics in deck order with places, status, note titles, unread; readiness", has_doc, crate::topic_cmds::list),
+    spec!(query "agent.topic", "Topic", "{topic} → everything about it, discussion included", has_doc, crate::topic_cmds::get),
     spec!(change "agent.seen", "Mark Answer Read", "{id}", has_doc, seen),
     spec!(change "agent.private", "Mark as Client Data", "{slide?, shape?|id?, words?, on?: bool (default true)} — the agent sees pseudonyms there and can't change it", has_slide, private),
-    spec!(change "agent.removeNote", "Remove Agent Note", "{id}", has_doc, remove_note),
+    spec!(change "agent.removeNote", "Remove Note", "{id}", has_doc, crate::topic_cmds::remove_note),
     spec!(query "agent.documents", "Open Decks", "{} → the open decks as AItoCraft lists them: id, title, path, frontmost, open questions, listeners", has_doc, documents_cmd),
     spec!(change "agent.attach", "Attach Agent", "{document?, label?} → {listener, document, title, app}: a conversation listens to this deck (AItoCraft)", has_doc, attach),
     spec!(change "agent.detach", "Detach Agent", "{listener}", has_doc, detach),
@@ -44,8 +55,8 @@ pub static SPECS: &[CommandSpec] = &[
     // the agent's side
     spec!(query "agent.questions", "Agent Questions", "{status?: pending|working|answered|open|all (default all)} → questions with where they are", has_doc, questions),
     spec!(change "agent.claim", "Take Question", "{id} — marks it as being worked on", has_doc, claim),
-    spec!(change "agent.answer", "Answer Question", "{id, text, links?: [{label, href, summary?}]}", has_doc, answer),
-    spec!(change "agent.note", "Add Agent Note", "{text, kind?: faq|explanation|assumption|source|check, title? (faq: the question), links?, slide?, shape?, words?, cell?, actor?}", has_slide, note),
+    spec!(change "agent.answer", "Answer Question", "{id, text (Markdown links: [slide 4](slide:4), [3.2](place:3.2)…), links?: [{label, href}]}", has_doc, crate::topic_cmds::answer),
+    spec!(change "agent.note", "Add Note", "{topic? | slide?, shape?, words?, title, kind?: explanation|source|assumption|decision|faq|check, text, url?, summary?, actor?}", has_slide, crate::topic_cmds::note),
     spec!(change "agent.decision", "Log Decision", "{text, source?, slide?, shape?, actor?}", has_doc, decision),
     spec!(query "agent.layer", "Agent Layer", "{} → anchors (resolved), questions, notes, client-data marks, history", has_doc, layer_cmd),
     spec!(query "agent.context", "Agent Context", "{masked?} → the deck at a glance: slides with titles, what is on them, client data, open questions, recent decisions", has_doc, context),
@@ -64,11 +75,11 @@ pub static SPECS: &[CommandSpec] = &[
 
 // ---------------------------------------------------------------- params
 
-fn str_p<'a>(p: &'a Json, k: &str) -> Option<&'a str> {
+pub(crate) fn str_p<'a>(p: &'a Json, k: &str) -> Option<&'a str> {
     p.get(k).and_then(Json::as_str)
 }
 
-fn masked_p(p: &Json) -> bool {
+pub(crate) fn masked_p(p: &Json) -> bool {
     actor_p(p, Actor::Human) == Actor::Agent || p.get("masked").and_then(Json::as_bool).unwrap_or(true)
 }
 
@@ -87,13 +98,13 @@ pub(crate) fn actor_p(p: &Json, default: Actor) -> Actor {
     }
 }
 
-fn text_p(p: &Json, k: &str, cmd: &str) -> Result<String> {
+pub(crate) fn text_p(p: &Json, k: &str, cmd: &str) -> Result<String> {
     let t = str_p(p, k).map(str::trim).filter(|t| !t.is_empty()).ok_or_else(|| bad(cmd, format!("missing `{k}`")))?;
     // Long enough for an essay, short enough to never be a problem in the file.
     Ok(t.chars().take(20_000).collect())
 }
 
-fn links_p(p: &Json) -> Vec<Link> {
+pub(crate) fn links_p(p: &Json) -> Vec<Link> {
     p.get("links")
         .and_then(Json::as_array)
         .map(|a| a.iter().take(50).filter_map(|v| serde_json::from_value(v.clone()).ok()).collect())
@@ -144,7 +155,7 @@ fn shape_text(sh: &Shape) -> String {
 }
 
 /// The place a command is about: its params, else the selection, else the current slide.
-fn place_p(s: &Session, p: &Json, cmd: &str) -> Result<Place> {
+pub(crate) fn place_p(s: &Session, p: &Json, cmd: &str) -> Result<Place> {
     let d = s.doc()?;
     if d.selection.target != Target::Slides {
         return Err(bad(cmd, "the agent layer works on slides (leave Slide Master view)"));
@@ -221,28 +232,6 @@ fn where_json(s: &Session, l: &Layer, m: &Masker, anchor_id: &str) -> Json {
 
 // ---------------------------------------------------------------- presenter's side
 
-fn ask(s: &mut Session, p: &Json) -> Result<Json> {
-    let text = text_p(p, "text", "agent.ask")?;
-    let place = place_p(s, p, "agent.ask")?;
-    let a = anchor::anchor_at(s, &place)?;
-    let id = layer::update(s.doc()?, |l| {
-        let id = l.fresh_id("q");
-        l.questions.push(Question {
-            id: id.clone(),
-            anchor: a,
-            text,
-            status: QuestionStatus::Pending,
-            asked_at: now_ms(),
-            answer: None,
-            seen: false,
-            kind: String::new(),
-        });
-        id
-    });
-    let label = place.label(&s.doc()?.doc);
-    Ok(json!({"id": id, "place": label}))
-}
-
 fn seen(s: &mut Session, p: &Json) -> Result<Json> {
     let id = text_p(p, "id", "agent.seen")?;
     let ok = layer::update(s.doc()?, |l| l.questions.iter_mut().find(|q| q.id == id).map(|q| q.seen = true).is_some());
@@ -259,11 +248,13 @@ fn private(s: &mut Session, p: &Json) -> Result<Json> {
         return Err(bad("agent.private", "mark a shape (or words in one), not a whole slide"));
     }
     let label = place.label(&s.doc()?.doc);
+    let mut changed: Vec<String> = vec![];
     if on {
         let a = anchor::anchor_at(s, &place)?;
         layer::update(s.doc()?, |l| {
             if !l.private.contains(&a) {
-                l.private.push(a);
+                l.private.push(a.clone());
+                changed.push(a);
             }
         });
     } else {
@@ -280,29 +271,26 @@ fn private(s: &mut Session, p: &Json) -> Result<Json> {
                 })
                 .map(|a| a.id.clone())
                 .collect();
+            changed = l.private.iter().filter(|id| hits.contains(id)).cloned().collect();
             l.private.retain(|id| !hits.contains(id));
         });
     }
     let actor = actor_p(p, Actor::Human);
+    if actor == Actor::Human && !changed.is_empty() {
+        crate::undo::push(s, crate::undo::Op::Private { anchors: changed, on });
+    }
     layer::update(s.doc()?, |l| {
         l.log(actor, "change", format!("{} client data: {label}", if on { "Marked" } else { "Unmarked" }), "agent.private", None, String::new())
     });
     Ok(json!({"place": label, "private": on}))
 }
 
-fn remove_note(s: &mut Session, p: &Json) -> Result<Json> {
-    let id = text_p(p, "id", "agent.removeNote")?;
-    let ok = layer::update(s.doc()?, |l| {
-        let n = l.notes.len();
-        l.notes.retain(|x| x.id != id);
-        n != l.notes.len()
-    });
-    if ok { Ok(json!({"id": id})) } else { Err(bad("agent.removeNote", format!("no note `{id}`"))) }
-}
-
 // ---------------------------------------------------------------- agent's side
 
 fn status_matches(q: &Question, want: &str) -> bool {
+    if q.hidden && want != "withdrawn" {
+        return false;
+    }
     // An unanswered check is stale after a minute: nobody should wake up for it (the status
     // still says "No answer to check").
     if q.is_ping() && now_ms().saturating_sub(q.asked_at) >= crate::listener::PING_TIMEOUT_MS {
@@ -312,7 +300,8 @@ fn status_matches(q: &Question, want: &str) -> bool {
         "pending" => q.status == QuestionStatus::Pending,
         "working" => q.status == QuestionStatus::Working,
         "answered" => q.status == QuestionStatus::Answered,
-        "open" => q.status != QuestionStatus::Answered,
+        "open" => matches!(q.status, QuestionStatus::Pending | QuestionStatus::Working),
+        "withdrawn" => q.status == QuestionStatus::Withdrawn,
         _ => true,
     }
 }
@@ -323,6 +312,18 @@ pub fn question_json(s: &Session, l: &Layer, m: &Masker, q: &Question) -> Json {
     if let Ok(d) = s.doc() {
         o["document"] = json!(crate::documents::id(d.uid));
         o["documentTitle"] = json!(m.text(&crate::documents::title(d)));
+    }
+    if !q.is_ping()
+        && let Ok(d) = s.doc()
+    {
+        let nums = crate::topics::numbers_of(d, l);
+        o["text"] = json!(m.text(&crate::textlinks::render(d, l, &nums, &q.text)));
+        if let Some(a) = &q.answer {
+            o["answer"]["text"] = json!(m.text(&crate::textlinks::render(d, l, &nums, &a.text)));
+        }
+        if let Some(t) = l.topic(&q.topic) {
+            o["topic"] = json!({"id": t.id, "number": nums.topic(&t.id), "status": t.status.id(), "statusText": m.text(&crate::textlinks::plain(d, l, &nums, &t.status_text))});
+        }
     }
     if q.is_ping() {
         o["where"] = Json::Null;
@@ -355,48 +356,6 @@ fn claim(s: &mut Session, p: &Json) -> Result<Json> {
         None => Err(format!("no question `{id}`")),
     });
     r.map(|()| json!({"id": id})).map_err(|m| bad("agent.claim", m))
-}
-
-fn answer(s: &mut Session, p: &Json) -> Result<Json> {
-    let id = text_p(p, "id", "agent.answer")?;
-    let text = text_p(p, "text", "agent.answer")?;
-    let links = links_p(p);
-    let ping = layer::get(s.doc()?).questions.iter().any(|q| q.id == id && q.is_ping());
-    if ping {
-        // A connection check: noted, and gone (it was never a question for the presenter).
-        crate::listener::answered(&id, str_p(p, "listener"));
-        layer::update(s.doc()?, |l| l.questions.retain(|q| q.id != id));
-        return Ok(json!({"id": id, "ping": true}));
-    }
-    let ok = layer::update(s.doc()?, |l| {
-        let Some(q) = l.questions.iter_mut().find(|q| q.id == id) else { return false };
-        q.status = QuestionStatus::Answered;
-        q.seen = false;
-        q.answer = Some(Answer { text, links, at: now_ms() });
-        let (anchor, qtext) = (q.anchor.clone(), q.text.clone());
-        l.log(Actor::Agent, "decision", format!("Answered “{qtext}”"), "agent.answer", Some(anchor), id.clone());
-        true
-    });
-    if ok { Ok(json!({"id": id})) } else { Err(bad("agent.answer", format!("no question `{id}`"))) }
-}
-
-fn note(s: &mut Session, p: &Json) -> Result<Json> {
-    let text = text_p(p, "text", "agent.note")?;
-    let place = place_p(s, p, "agent.note")?;
-    let a = anchor::anchor_at(s, &place)?;
-    let kind = match str_p(p, "kind") {
-        Some(k) if layer::NOTE_KINDS.contains(&k) => k.to_string(),
-        _ => "explanation".into(),
-    };
-    let title: String = str_p(p, "title").unwrap_or("").chars().take(500).collect();
-    let links = links_p(p);
-    let author = actor_p(p, Actor::Human);
-    let id = layer::update(s.doc()?, |l| {
-        let id = l.fresh_id("n");
-        l.notes.push(Note { id: id.clone(), anchor: a, kind, title, text, links, author, at: now_ms() });
-        id
-    });
-    Ok(json!({"id": id, "place": place.label(&s.doc()?.doc)}))
 }
 
 fn decision(s: &mut Session, p: &Json) -> Result<Json> {
@@ -730,6 +689,7 @@ fn link_check(s: &mut Session, p: &Json) -> Result<Json> {
         out.push(json!({"slide": slide + 1, "shape": id.0, "link": l.id, "state": c.state, "message": c.message, "via": c.via, "range": c.range, "anchored": c.anchored, "changed": c.changed.len()}));
         links::remember(&l.id, c);
     }
+    crate::topic_cmds::raise_stale(s);
     Ok(Json::Array(out))
 }
 
@@ -831,6 +791,7 @@ fn ping(s: &mut Session, p: &Json) -> Result<Json> {
             answer: None,
             seen: false,
             kind: "ping".into(),
+            ..Default::default()
         });
         id
     });

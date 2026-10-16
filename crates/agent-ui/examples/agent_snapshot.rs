@@ -1,9 +1,10 @@
 //! Offscreen render of DeckCraft with the agent layer, for looking at the UI without a window
 //! (and for the README's screenshots). Builds a demo deck in code: a client's name marked as client
-//! data, questions in every state, prepared answers, and a table linked to a workbook whose numbers
-//! have since changed.
+//! data, topics in every status (one the agent is working on, one with an unread answer, one the
+//! agent suggests agreeing, one whose shape was deleted), prepared answers, and a table linked to a
+//! workbook whose numbers have since changed.
 //!
-//! `cargo run -p deckcraft-agent-ui --example agent_snapshot -- [--pane slide|questions|links|history|connect]
+//! `cargo run -p deckcraft-agent-ui --example agent_snapshot -- [--pane selection|overview|history|topic:N]
 //!  [--slide N] [--hover-link] [--presenter] [--agent-tab] [--collapsed]
 //!  [--status answering|checking|noanswer|listener|listening|nobody] [--mode connect|channel|background|off] [--menu] [--size 1440x900] [--dark] out.png`
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -81,22 +82,44 @@ fn demo(dir: &std::path::Path) -> (Session, ShapeId) {
         "slide.new",
         json!({"layout": "titleAndContent", "title": "Next steps with Acme Holdings AG", "body": "Sign the renewal by December\nKick-off in January"}),
     );
-    // The layer: client data, questions, prepared answers, decisions.
+    // A date on slide 3 that gets a question and is then deleted: its place reads "removed — was …".
+    let date = run(&mut s, "insert.textBox", json!({"rect": [520, 420, 360, 40], "text": "Legal sign-off: 28 November"}))["id"].as_u64().unwrap();
+    // The layer: client data, topics in every state, prepared answers, decisions.
     let cover = title[1].0;
     run(&mut s, "agent.private", json!({"slide": 1, "shape": cover, "words": "Acme Holdings AG"}));
+    // Slide 1: the title, agreed by the presenter.
+    let t_cover = run(&mut s, "agent.ask", json!({"slide": 1, "shape": title[0].0, "text": "Is “Q3 Board Review” the title the board pack uses?"}));
+    let q0 = t_cover["id"].as_str().unwrap().to_string();
+    run(&mut s, "agent.claim", json!({"id": q0, "actor": "agent"}));
+    run(&mut s, "agent.answer", json!({"id": q0, "actor": "agent", "text": "Yes: the pack and the invitation both say “Q3 Board Review”."}));
+    run(&mut s, "agent.seen", json!({"id": q0}));
+    run(&mut s, "agent.setStatus", json!({"topic": t_cover["topicId"], "status": "agreed", "text": "matches the invitation"}));
+    // Slide 2: the growth figure (answered, unread), with the table as a second place.
     let q1 =
         run(&mut s, "agent.ask", json!({"slide": 2, "shape": growth, "words": "6%", "text": "Is 6% on the same basis as last quarter's figure?"}));
-    let q2 = run(&mut s, "agent.ask", json!({"slide": 2, "shape": table.0, "text": "Why is West growing faster than North?"}));
-    run(&mut s, "agent.ask", json!({"slide": 3, "text": "What do we need from legal before December?"}));
+    let q2 = run(&mut s, "agent.ask", json!({"slide": 2, "shape": table.0, "text": "Why is West growing faster than North?", "new": true}));
+    let t1 = q1["topicId"].as_str().unwrap().to_string();
     let (q1, q2) = (q1["id"].as_str().unwrap().to_string(), q2["id"].as_str().unwrap().to_string());
     run(&mut s, "agent.claim", json!({"id": q1, "actor": "agent"}));
     run(
         &mut s,
         "agent.answer",
-        json!({"id": q1, "actor": "agent", "text": "Yes: both quarters are management accounts, constant currency. Q2 restated for the West reclassification (+12k).", "links": [{"label": "Slide 2 table", "href": format!("shape:2/{}", table.0)}, {"label": "Finance pack", "href": "https://example.com/finance/q3"}]}),
+        json!({"id": q1, "actor": "agent", "text": format!("Yes: both quarters are management accounts at constant currency; Q2 was restated for the West reclassification (+12k). The 6% comes from [the table's totals](shape:2/{}), and slide 3 assumes it.", table.0), "links": [{"label": "Finance pack", "href": "https://example.com/finance/q3"}]}),
     );
-    run(&mut s, "agent.claim", json!({"id": q2, "actor": "agent"}));
     run(
+        &mut s,
+        "agent.addPlaces",
+        json!({"topic": t1, "actor": "agent", "places": [{"slide": 2, "shape": table.0, "reason": "the 6% is the change in this table's Q3 total over Q2"}]}),
+    );
+    run(
+        &mut s,
+        "agent.note",
+        json!({"topic": t1, "kind": "source", "actor": "agent", "title": "Q3 management accounts", "text": "Constant currency, restated Q2.", "url": "https://example.com/finance/q3", "summary": "Finance pack, 14 Oct: management accounts for Q2 and Q3."}),
+    );
+    // The table: the agent is working on it.
+    run(&mut s, "agent.claim", json!({"id": q2, "actor": "agent"}));
+    // Slide 2's prepared answers: for information.
+    let faq = run(
         &mut s,
         "agent.note",
         json!({"slide": 2, "kind": "faq", "actor": "agent", "title": "Are these numbers audited?", "text": "No: management accounts. The audit of H2 closes in February."}),
@@ -104,13 +127,41 @@ fn demo(dir: &std::path::Path) -> (Session, ShapeId) {
     run(
         &mut s,
         "agent.note",
-        json!({"slide": 2, "kind": "faq", "actor": "agent", "title": "Why did North jump?", "text": "Two renewals moved from Q2 into Q3 (about 50k). Without them North is flat."}),
+        json!({"topic": faq["topicId"], "kind": "faq", "actor": "agent", "title": "Why did North jump?", "text": "Two renewals moved from Q2 into Q3 (about 50k). Without them North is flat."}),
     );
+    // Slide 2's title: the agent suggests Agreed.
+    let title2 = s.doc().unwrap().doc.slides[1].shapes[0].id.0;
+    let q3 = run(&mut s, "agent.ask", json!({"slide": 2, "shape": title2, "text": "Revenue or net revenue?"}));
+    let q3id = q3["id"].as_str().unwrap().to_string();
+    run(&mut s, "agent.claim", json!({"id": q3id, "actor": "agent"}));
     run(
         &mut s,
-        "agent.note",
-        json!({"slide": 2, "shape": table.0, "kind": "source", "actor": "agent", "title": "From the Q3 model", "text": "Model!A1:C4, linked: the slide warns when the model changes."}),
+        "agent.answer",
+        json!({"id": q3id, "actor": "agent", "text": "Revenue: the model has no deductions in Q2 or Q3, so the two are the same."}),
     );
+    run(&mut s, "agent.seen", json!({"id": q3id}));
+    run(
+        &mut s,
+        "agent.proposeAgreed",
+        json!({"topic": q3["topicId"], "actor": "agent", "reasons": "Revenue equals net revenue here (no deductions in the model); the board asked for top line."}),
+    );
+    // Slide 3: a question waiting, a revise, and the date that is about to go.
+    run(&mut s, "agent.ask", json!({"slide": 3, "text": "What do we need from legal before December?"}));
+    let body = s.doc().unwrap().doc.slides[2].shapes.get(1).map(|x| x.id.0).unwrap();
+    let q5 = run(&mut s, "agent.ask", json!({"slide": 3, "shape": body, "text": "Is January realistic for the kick-off?"}));
+    run(
+        &mut s,
+        "agent.setStatus",
+        json!({"topic": q5["topicId"], "status": "revise", "text": "the kick-off moves to February: see slide 2 for the renewals"}),
+    );
+    let q6 = run(&mut s, "agent.ask", json!({"slide": 3, "shape": date, "text": "Is 28 November confirmed with legal?"}));
+    let q6id = q6["id"].as_str().unwrap().to_string();
+    run(&mut s, "agent.claim", json!({"id": q6id, "actor": "agent"}));
+    run(&mut s, "agent.answer", json!({"id": q6id, "actor": "agent", "text": "Not yet: legal confirms after the renewal is signed."}));
+    run(&mut s, "agent.seen", json!({"id": q6id}));
+    run(&mut s, "slide.go", json!({"index": 2}));
+    run(&mut s, "selection.select", json!({"ids": [date]}));
+    run(&mut s, "edit.delete", json!({}));
     run(
         &mut s,
         "agent.decision",
@@ -200,17 +251,45 @@ fn main() {
         let _ = session.execute("slide.go", &json!({"index": slide.saturating_sub(1)}));
     }
     if presenter {
-        // Presenter View's notes column, as the hook draws it.
+        // Presenter View as the hooks draw it: the slide with its topic markers (the presenter
+        // turned them on), and the notes column with the toggle and the prepared answers.
         let doc = session.doc().unwrap().doc.clone();
         let uid = session.doc().unwrap().uid;
-        let notes = doc.slides.get(slide.saturating_sub(1)).map(|s| s.notes_text()).unwrap_or_default();
-        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(420.0, 520.0)).with_pixels_per_point(2.0).wgpu().build_ui(move |ui| {
+        let index = slide.saturating_sub(1);
+        let notes = doc.slides.get(index).map(|s| s.notes_text()).unwrap_or_default();
+        let w = 1280u32;
+        let h = (w as f64 * doc.slide_size.height / doc.slide_size.width.max(1.0)) as u32;
+        let img = deckcraft_render::render_slide(
+            &doc,
+            index,
+            &deckcraft_render::RenderOpts { scale: w as f64 / doc.slide_size.width.max(1.0), size: Some((w, h)), ..Default::default() },
+        );
+        let picture = deckcraft_ui_egui::textures::to_color_image(&img, false);
+        let mut tex: Option<egui::TextureHandle> = None;
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1080.0, 440.0)).with_pixels_per_point(2.0).wgpu().build_ui(move |ui| {
+            // The theme's fonts first (they take effect from the next frame).
+            if tex.is_none() {
+                deckcraft_ui_egui::theme::install_fonts(ui.ctx());
+                tex = Some(ui.ctx().load_texture("slide", picture.clone(), Default::default()));
+                return;
+            }
+            let Some(tex) = tex.clone() else { return };
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(egui::Color32::from_gray(24)).inner_margin(16)).show(ui, |ui| {
-                ui.label(egui::RichText::new("Notes").size(13.0).color(egui::Color32::from_gray(170)));
-                ui.label(egui::RichText::new(&notes).size(18.0).color(egui::Color32::from_gray(230)));
-                deckcraft_agent_ui::presenter_preview(ui, &doc, slide.saturating_sub(1), uid);
+                ui.horizontal_top(|ui| {
+                    let size = egui::vec2(640.0, 640.0 * tex.size()[1] as f32 / tex.size()[0].max(1) as f32);
+                    let r = ui.add(egui::Image::new((tex.id(), size))).rect;
+                    deckcraft_agent_ui::presenter_slide_preview(ui, r, &doc, index, uid);
+                    ui.add_space(16.0);
+                    ui.vertical(|ui| {
+                        ui.set_width(360.0);
+                        ui.label(egui::RichText::new("Notes").size(13.0).color(egui::Color32::from_gray(170)));
+                        ui.label(egui::RichText::new(&notes).size(18.0).color(egui::Color32::from_gray(230)));
+                        deckcraft_agent_ui::presenter_preview(ui, &doc, index, uid);
+                    });
+                });
             });
         });
+        h.run_steps(1);
         h.run_steps(4);
         h.render().expect("render").save(&out).expect("save");
         println!("{out}");
@@ -218,7 +297,7 @@ fn main() {
     }
     match &pane {
         Some(tab) => deckcraft_agent_ui::request_pane(true, tab),
-        None => deckcraft_agent_ui::request_pane(false, "slide"),
+        None => deckcraft_agent_ui::request_pane(false, "selection"),
     }
     let mut harness =
         egui_kittest::Harness::builder().with_size(egui::vec2(size.0, size.1)).with_pixels_per_point(2.0).with_max_steps(12).wgpu().build_ui_state(

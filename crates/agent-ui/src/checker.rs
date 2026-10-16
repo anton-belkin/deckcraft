@@ -14,6 +14,8 @@ const EVERY: f64 = 30.0;
 #[derive(Default)]
 pub(crate) struct Checker {
     busy: Arc<AtomicBool>,
+    /// A check finished: its stale links raise their topics to Revise (on the UI thread).
+    done: Arc<AtomicBool>,
     last: Option<f64>,
     /// The document and its link ids at the last check (a new one checks at once).
     seen: (u64, Vec<String>),
@@ -23,6 +25,9 @@ pub(crate) struct Checker {
 
 impl Checker {
     pub fn tick(&mut self, app: &SlideApp, ctx: &egui::Context) {
+        if self.done.swap(false, Ordering::AcqRel) {
+            deckcraft_agent::topic_cmds::raise_stale(&app.session);
+        }
         let Some(d) = app.session.active() else { return };
         let list: Vec<links::Link> = links::all(&d.doc).into_iter().map(|(_, _, l)| l).collect();
         if list.is_empty() {
@@ -43,6 +48,7 @@ impl Checker {
         self.seen = (d.uid, ids);
         let deck = d.path.clone();
         let busy = self.busy.clone();
+        let done = self.done.clone();
         busy.store(true, Ordering::Release);
         let ctx = ctx.clone();
         #[cfg(not(target_arch = "wasm32"))]
@@ -53,6 +59,7 @@ impl Checker {
                     let c = links::check(l, deck.as_deref(), Some(&gridcraft));
                     links::remember(&l.id, c);
                 }
+                done.store(true, Ordering::Release);
                 busy.store(false, Ordering::Release);
                 ctx.request_repaint();
             });
@@ -62,7 +69,7 @@ impl Checker {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            let _ = (list, deck, ctx);
+            let _ = (list, deck, ctx, done);
             busy.store(false, Ordering::Release);
         }
     }

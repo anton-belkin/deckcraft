@@ -298,6 +298,7 @@ fn events(mut w: TcpStream, control: &str, document: Option<String>) {
     let mut seen: HashSet<String> = HashSet::new();
     let mut slot: Option<Remote> = None;
     loop {
+        let mut lost = false;
         if let Ok(b) = backend(&mut slot, control) {
             let mut params = json!({"status": "pending", "actor": "agent", "masked": true, "poll": true});
             if let Some(d) = &document {
@@ -307,7 +308,9 @@ fn events(mut w: TcpStream, control: &str, document: Option<String>) {
                 Ok(Value::Array(list)) => {
                     for q in list {
                         let Some(id) = q.get("id").and_then(Value::as_str).map(str::to_string) else { continue };
-                        if !seen.insert(id.clone()) {
+                        // A question sent again (redo after an undo) is new again.
+                        let at = q.get("askedAt").and_then(Value::as_u64).unwrap_or(0);
+                        if !seen.insert(format!("{id}@{at}")) {
                             continue;
                         }
                         let line = json!({
@@ -320,6 +323,7 @@ fn events(mut w: TcpStream, control: &str, document: Option<String>) {
                             "kind": q.get("kind").cloned().unwrap_or_else(|| json!("question")),
                             "document": q.get("document"),
                             "documentTitle": q.get("documentTitle"),
+                            "topic": q.get("topic"),
                             "hint": "claim_question, investigate, answer_question",
                         });
                         if writeln!(w, "{line}").and_then(|()| w.flush()).is_err() {
@@ -328,8 +332,27 @@ fn events(mut w: TcpStream, control: &str, document: Option<String>) {
                     }
                 }
                 Ok(_) => {}
-                Err(_) => slot = None,
+                Err(_) => lost = true,
             }
+            // Questions the person took back while the agent worked on them.
+            let mut params = json!({"status": "withdrawn", "actor": "agent", "masked": true, "poll": true});
+            if let Some(d) = &document {
+                params["document"] = json!(d);
+            }
+            if let Ok(Value::Array(list)) = b.call("engine.execute", json!({"command": "agent.questions", "params": params})) {
+                for q in list {
+                    let Some(id) = q.get("id").and_then(Value::as_str) else { continue };
+                    if seen.insert(format!("withdrawn:{id}")) {
+                        let line = json!({"event": "withdrawn", "id": id, "document": q.get("document"), "hint": "the person took this question back: drop it"});
+                        if writeln!(w, "{line}").and_then(|()| w.flush()).is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        if lost {
+            slot = None;
         }
         std::thread::sleep(Duration::from_millis(800));
         // Notice a client that went away even when nothing is being written.

@@ -40,6 +40,10 @@ pub mod runner;
 pub mod server;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod stdio;
+pub mod textlinks;
+pub mod topic_cmds;
+pub mod topics;
+pub mod undo;
 pub mod xlsx;
 
 use std::sync::Arc;

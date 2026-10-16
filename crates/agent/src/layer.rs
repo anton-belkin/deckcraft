@@ -27,6 +27,8 @@ pub enum Actor {
     #[default]
     Human,
     Agent,
+    /// The app itself (a linked source changed, …).
+    App,
 }
 
 /// A place the layer points at: a slide, a shape on it, words in the shape's text or a table
@@ -57,6 +59,10 @@ pub struct Anchor {
     /// The slide or shape was deleted.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub lost: bool,
+    /// Where it was, kept up to date while it exists: "on slide 4, after the chart". A removed
+    /// place reads "removed — was …".
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub was: String,
 }
 
 fn is_zero(v: &u32) -> bool {
@@ -82,6 +88,8 @@ pub enum QuestionStatus {
     /// An agent has taken it.
     Working,
     Answered,
+    /// The person took it back (undo) while the agent worked on it.
+    Withdrawn,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -111,6 +119,12 @@ pub struct Question {
     /// `ping` for a connection check (never shown, never saved); empty for a person's question.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub kind: String,
+    /// The topic it belongs to.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub topic: String,
+    /// Undone by the person: kept (redo brings it back), not shown, not sent.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
 }
 
 impl Question {
@@ -139,6 +153,104 @@ pub struct Note {
     pub author: Actor,
     #[serde(default)]
     pub at: u64,
+    /// The topic it belongs to.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub topic: String,
+    /// A source's address and what is behind it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub url: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+    /// The person pinned it (it stays open in the topic).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
+    /// The person removed it (undo brings it back).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub deleted: bool,
+}
+
+/// A topic's status (TOPICS.md §1).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Status {
+    /// A question or doubt, no decision yet.
+    #[default]
+    Open,
+    /// Something here must change.
+    Revise,
+    /// Settled and accepted (only a person sets it).
+    Agreed,
+    /// Nothing to decide: an explanation, a source, a caveat.
+    Info,
+}
+
+impl Status {
+    pub const ALL: [Status; 4] = [Status::Open, Status::Revise, Status::Agreed, Status::Info];
+
+    pub fn parse(s: &str) -> Option<Status> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "open" => Some(Status::Open),
+            "revise" => Some(Status::Revise),
+            "agreed" => Some(Status::Agreed),
+            "info" | "information" | "for information" => Some(Status::Info),
+            _ => None,
+        }
+    }
+    pub fn id(self) -> &'static str {
+        match self {
+            Status::Open => "open",
+            Status::Revise => "revise",
+            Status::Agreed => "agreed",
+            Status::Info => "info",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Status::Open => "Open",
+            Status::Revise => "Revise",
+            Status::Agreed => "Agreed",
+            Status::Info => "For information",
+        }
+    }
+}
+
+/// Where a topic applies: one or several anchors (shapes, words in a shape, the slide).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Place {
+    pub id: String,
+    pub anchors: Vec<String>,
+    /// Why the agent added it ("depends on 3.1: same revenue figure").
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub reason: String,
+    pub by: Actor,
+    /// The person rejected the agent's place (undo brings it back).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub rejected: bool,
+    /// Made by duplicating the shape of another place (a copy that goes away goes with it).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub copy_of: String,
+}
+
+/// One question or theme about the deck: places, a status, notes, a discussion (TOPICS.md).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Topic {
+    pub id: String,
+    pub places: Vec<Place>,
+    pub status: Status,
+    /// Free text with the status ("agreed with the CFO on 14.10, if capex is confirmed").
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub status_text: String,
+    pub status_by: Actor,
+    pub status_at: u64,
+    /// The agent proposes Agreed, with its reasons (the person confirms with one click).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub proposal: String,
+    /// Undone by the person (redo brings it back).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
+    pub at: u64,
 }
 
 fn explanation() -> String {
@@ -146,7 +258,10 @@ fn explanation() -> String {
 }
 
 /// The kinds of notes.
-pub const NOTE_KINDS: &[&str] = &["faq", "explanation", "assumption", "source", "check"];
+pub const NOTE_KINDS: &[&str] = &["faq", "explanation", "assumption", "source", "decision", "check"];
+
+/// The layer's format version: 2 has topics (v1 decks are migrated when read).
+pub const VERSION: u32 = 2;
 
 /// One entry of the decision history / audit trail.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -175,6 +290,7 @@ pub struct Layer {
     pub version: u32,
     pub next_id: u64,
     pub anchors: Vec<Anchor>,
+    pub topics: Vec<Topic>,
     pub questions: Vec<Question>,
     pub notes: Vec<Note>,
     /// Anchors of client data: the agent sees pseudonyms there and can't change it.
@@ -210,7 +326,11 @@ impl Layer {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.anchors.is_empty() && self.log.is_empty() && self.questions.iter().all(Question::is_ping) && self.notes.is_empty()
+        self.anchors.is_empty()
+            && self.log.is_empty()
+            && self.questions.iter().all(Question::is_ping)
+            && self.notes.is_empty()
+            && self.topics.is_empty()
     }
 
     /// The people's questions (connection checks left out).
@@ -220,13 +340,104 @@ impl Layer {
 
     /// Anchors nothing refers to any more.
     pub fn unused_anchors(&self) -> Vec<String> {
+        // Anchors that links inside texts point at (`anchor:<id>`).
+        let mut in_text: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut scan = |t: &str| {
+            for part in t.split("(anchor:").skip(1) {
+                if let Some(id) = part.split(')').next() {
+                    in_text.insert(id.to_string());
+                }
+            }
+        };
+        for q in &self.questions {
+            scan(&q.text);
+            if let Some(a) = &q.answer {
+                scan(&a.text);
+            }
+        }
+        for n in &self.notes {
+            scan(&n.text);
+            scan(&n.title);
+        }
+        for t in &self.topics {
+            scan(&t.status_text);
+            scan(&t.proposal);
+        }
         let used = |id: &str| {
             self.questions.iter().any(|q| q.anchor == id)
                 || self.notes.iter().any(|n| n.anchor == id)
+                || self.topics.iter().any(|t| t.places.iter().any(|p| p.anchors.iter().any(|a| a == id)))
                 || self.private.iter().any(|p| p == id)
                 || self.log.iter().any(|e| e.anchor.as_deref() == Some(id))
+                || in_text.contains(id)
         };
         self.anchors.iter().filter(|a| !used(&a.id)).map(|a| a.id.clone()).collect()
+    }
+
+    pub fn topic(&self, id: &str) -> Option<&Topic> {
+        self.topics.iter().find(|t| t.id == id)
+    }
+
+    /// Version 1 (questions and notes on anchors) to 2 (topics): one topic per question, its
+    /// anchor as the place, its answer in the discussion, Open (For information when answered and
+    /// read); notes on one anchor become the notes of a topic of their own, For information.
+    pub fn migrate(&mut self) {
+        if self.version >= VERSION {
+            return;
+        }
+        let mut topics = std::mem::take(&mut self.topics);
+        let questions = std::mem::take(&mut self.questions);
+        let mut migrated = Vec::with_capacity(questions.len());
+        for mut q in questions {
+            if q.topic.is_empty() && !q.is_ping() {
+                let tid = self.fresh_id("t");
+                let pid = self.fresh_id("p");
+                let read = q.status == QuestionStatus::Answered && q.seen;
+                topics.push(Topic {
+                    id: tid.clone(),
+                    places: vec![Place { id: pid, anchors: vec![q.anchor.clone()], by: Actor::Human, ..Default::default() }],
+                    status: if read { Status::Info } else { Status::Open },
+                    status_by: Actor::Human,
+                    status_at: q.asked_at,
+                    at: q.asked_at,
+                    ..Default::default()
+                });
+                q.topic = tid;
+            }
+            migrated.push(q);
+        }
+        self.questions = migrated;
+        let mut notes = std::mem::take(&mut self.notes);
+        for n in notes.iter_mut().filter(|n| n.topic.is_empty()) {
+            let existing = topics
+                .iter()
+                .find(|t| {
+                    t.status == Status::Info
+                        && t.places.len() == 1
+                        && t.places.first().is_some_and(|p| p.anchors == vec![n.anchor.clone()])
+                        && t.at == 0
+                })
+                .map(|t| t.id.clone());
+            let tid = match existing {
+                Some(t) => t,
+                None => {
+                    let tid = self.fresh_id("t");
+                    let pid = self.fresh_id("p");
+                    topics.push(Topic {
+                        id: tid.clone(),
+                        places: vec![Place { id: pid, anchors: vec![n.anchor.clone()], by: n.author, ..Default::default() }],
+                        status: Status::Info,
+                        status_by: n.author,
+                        ..Default::default()
+                    });
+                    tid
+                }
+            };
+            n.topic = tid;
+        }
+        self.notes = notes;
+        self.topics = topics;
+        self.version = VERSION;
     }
 
     /// The pseudonym number for a text hash, given out once and kept.
@@ -290,12 +501,13 @@ pub fn read_from(doc: &Presentation) -> Layer {
             continue;
         }
         if let Some(json) = between(&part.xml, "<![CDATA[", "]]>")
-            && let Ok(layer) = serde_json::from_str::<Layer>(json)
+            && let Ok(mut layer) = serde_json::from_str::<Layer>(json)
         {
+            layer.migrate();
             return layer;
         }
     }
-    Layer::default()
+    Layer { version: VERSION, ..Default::default() }
 }
 
 fn between<'a>(s: &'a str, open: &str, close: &str) -> Option<&'a str> {
@@ -315,6 +527,7 @@ pub fn write_into(doc: &mut Presentation, layer: &Layer) {
     doc.kept_parts.retain(|k| !is_ours(k));
     // Connection checks never go into the file.
     let mut layer = layer.clone();
+    layer.version = VERSION;
     layer.questions.retain(|q| !q.is_ping());
     if layer.is_empty() && layer.agent_session.is_empty() {
         return;
@@ -336,4 +549,21 @@ pub fn write_into(doc: &mut Presentation, layer: &Layer) {
 /// presentation, like Presenter View).
 pub fn by_uid(uid: u64) -> Option<Arc<Layer>> {
     store().as_ref().and_then(|m| m.get(&uid).cloned())
+}
+
+/// The layer as it goes out with a deck that is sent (TOPICS.md §1): places, statuses and notes
+/// stay; the discussion (questions, answers, the history's lines about them) is left out unless
+/// the sender includes it.
+pub fn for_sending(l: &Layer, discussion: bool) -> Layer {
+    let mut out = l.clone();
+    out.topics.retain(|t| !t.hidden);
+    out.notes.retain(|n| !n.deleted);
+    if !discussion {
+        out.questions.clear();
+        out.log.retain(|e| e.command != "agent.answer");
+        out.agent_session.clear();
+    } else {
+        out.questions.retain(|q| !q.hidden && !q.is_ping());
+    }
+    out
 }

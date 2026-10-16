@@ -51,25 +51,48 @@ When DeckCraft sends questions to your Claude Code session (`notifications/claud
 the `deckcraft-channel` server), each one arrives as a message with its `question_id`: handle it
 like any other question.
 
+## Topics
+
+Every question belongs to a **topic**: one question or theme about the deck, with places (shapes,
+words, slides; numbered 3, or 3.1, 3.2 when it has several), a status (Open, Revise, Agreed, For
+information) with a line of text, notes, and the discussion. The deck shows each place as a small
+numbered circle in the status colour. A question carries its topic's number and status: answer it
+in that context (`get_topic` gives the notes and the discussion so far; `list_topics` all of them).
+
+- **Link inside the text.** Write `[slide 4](slide:4)`, `[the chart](shape:4/12)`,
+  `[3.2](place:3.2)`, `[topic 3](topic:3)`, `[the source](note:3/n2)` in answers, notes and status
+  text; a plain "slide 4" is linked by itself. Links follow the deck when slides move.
+- **Add places that a change here affects** (`add_places` with a `reason`, e.g. "the 6% is computed
+  from this table"), and `widen_place` when the answer is about more than what was selected.
+- **Leave notes that will still matter after the chat** (`add_note` with the `topic`: sources with
+  `url` and `summary`, assumptions, decisions); the discussion is dropped when the deck is sent.
+- **Never mark Agreed: propose it** (`propose_agreed` with your reasons). You may `set_status` to
+  Open, Revise or For information, with a text that says why.
+
+A question the user takes back (⌘Z) is withdrawn: `answer_question` then says "this question was
+withdrawn by the user; drop it". Drop it.
+
 ## For each question
 
-1. `claim_question` at once: the shape shows the user you are on it.
+1. `claim_question` at once: the place's marker turns blue, so the user sees you are on it.
 2. Investigate: `get_context` (once per session), `read_slides` for the slide (`where.slide`) and
    the slides around it, `list_links` with `check: true` when the question is about a number in a
    linked table (it says which workbook cells it comes from and whether they changed).
-3. `answer_question`: short paragraphs, the answer first. Link the slides and shapes you rely on
-   (`slide:3`, `shape:3/12` = slide 3, shape id 12 from `read_slides`), your notes (`note:n3`) and
-   sources (https URLs with a one-line `summary`). If the premise is wrong, say so and show where.
+3. `answer_question`: short paragraphs, the answer first, with the links inside the text (above):
+   the slides and shapes you rely on (`shape:3/12` = slide 3, shape id 12 from `read_slides`), your
+   notes and sources. If the premise is wrong, say so and show where.
 4. If the audience is likely to ask the same, add it as a prepared answer (`add_note`, kind `faq`,
-   `title` = the question). If a decision was made, `log_decision`.
+   `title` = the question). If a decision was made, `log_decision`. Then the topic's status: Revise
+   when something must change, `propose_agreed` when it is settled.
 
 ## Prepare a deck (when asked, or when idle)
 
 - For every slide, 1–3 prepared answers (`add_note` kind `faq`, `slide`: n) to the questions a
   sharp audience asks: where a number comes from, what changed since last time, what is not
   included, what happens next. The presenter sees them in Presenter View under the speaker notes.
-- `list_links` with `check: true`: a `stale` link means the workbook changed since the paste. Tell
-  the user (`log_decision` or a `check` note on the shape); don't update it yourself unless asked.
+- `list_links` with `check: true`: a `stale` link means the workbook changed since the paste
+  (DeckCraft raises the topics on it to Revise). Say what changed in a `check` note on the topic;
+  don't update it yourself unless asked.
 - `add_note` kinds `source`, `assumption`, `explanation`, `check` on the shapes they are about.
 
 ## Changing the deck

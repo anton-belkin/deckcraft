@@ -3,7 +3,7 @@ name = "deckcraft-agent-ui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "DeckCraft agent layer UI (fork): the Agent pane, badges on slides, prepared answers in Presenter View, linked-cells hover card"
+description = "DeckCraft agent layer UI (fork): the Agent pane, topic markers on slides, prepared answers in Presenter View, linked-cells hover card"
 
 [lints]
 workspace = true
@@ -17,4 +17,5 @@ egui = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+deckcraft-render = { workspace = true }
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }

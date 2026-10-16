@@ -933,6 +933,7 @@ dependencies = [
  "deckcraft-agent",
  "deckcraft-engine",
  "deckcraft-geom",
+ "deckcraft-render",
  "deckcraft-ui-egui",
  "egui",
  "egui_kittest",

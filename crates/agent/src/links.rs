@@ -330,6 +330,9 @@ fn picture_of(s: &Session, t: &Table, rect: Xfrm) -> Result<Vec<u8>> {
     Ok(img.to_png())
 }
 
+/// Keeps link ids apart when two are pasted in the same millisecond.
+static NEXT_LINK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 /// Pastes a linked range on the current slide. Returns `{id, link}`.
 pub fn paste(s: &mut Session, p: Payload, mode: Mode, rect: Option<Xfrm>) -> Result<Json> {
     let p = validate(p).map_err(|e| bad("link.paste", e))?;
@@ -368,7 +371,7 @@ pub fn paste(s: &mut Session, p: Payload, mode: Mode, rect: Option<Xfrm>) -> Res
     let now = crate::now_ms();
     let link = Link {
         v: 1,
-        id: format!("l{:x}", now ^ u64::from(id.0) << 40),
+        id: format!("l{:x}{:x}", now ^ u64::from(id.0) << 40, NEXT_LINK.fetch_add(1, std::sync::atomic::Ordering::Relaxed)),
         mode,
         source: p.source.clone(),
         values: p.values.clone(),

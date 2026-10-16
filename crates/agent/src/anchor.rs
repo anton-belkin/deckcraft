@@ -79,6 +79,9 @@ fn set_key(tags: &mut Vec<(String, String)>, key: &str) {
 pub struct Index {
     slides: HashMap<String, usize>,
     shapes: HashMap<String, (usize, ShapeId)>,
+    /// Every place a key is found (duplicated slides and shapes carry it twice).
+    all_slides: HashMap<String, Vec<usize>>,
+    all_shapes: HashMap<String, Vec<(usize, ShapeId)>>,
 }
 
 impl Index {
@@ -87,10 +90,12 @@ impl Index {
         for (i, sl) in doc.slides.iter().enumerate() {
             if let Some(k) = key_of(&sl.tags) {
                 ix.slides.entry(k.to_string()).or_insert(i);
+                ix.all_slides.entry(k.to_string()).or_default().push(i);
             }
             walk(&sl.shapes, &mut |sh, _| {
                 if let Some(k) = key_of(&sh.tags) {
                     ix.shapes.entry(k.to_string()).or_insert((i, sh.id));
+                    ix.all_shapes.entry(k.to_string()).or_default().push((i, sh.id));
                 }
             });
         }
@@ -164,6 +169,7 @@ pub fn anchor_at(s: &mut Session, place: &Place) -> Result<String> {
         shape_id: shape.map_or(0, |sh| sh.id.0),
         shape_name: shape.map(shape_label).unwrap_or_default(),
         lost: false,
+        was: String::new(),
     };
     layer::update(s.doc()?, |l| l.anchors.push(anchor));
     let needs_slide = key_of(&sl.tags) != Some(slide_key.as_str());
@@ -190,45 +196,69 @@ fn put_keys(doc: &mut Presentation, slide: usize, slide_key: &str, shape: Option
     }
 }
 
-/// After a command: remembers where every anchor is, puts back keys an undo took away, and drops
+thread_local! {
+    /// The document and layer each document's anchors were last refreshed against.
+    static REFRESHED: std::cell::RefCell<HashMap<u64, (usize, u64)>> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// After a command: remembers where every anchor is (and, while it exists, where it sits, to say
+/// later where it was), puts back keys an undo took away, gives duplicated slides and shapes keys
+/// of their own with places in the same topics, drops places of copies that went away, and drops
 /// anchors nothing uses.
 pub fn refresh(d: &mut DocState) {
     let l = layer::get(d);
     if l.anchors.is_empty() {
         return;
     }
+    let stamp = (Arc::as_ptr(&d.doc) as usize, l.revision);
+    if REFRESHED.with(|r| r.borrow().get(&d.uid) == Some(&stamp)) {
+        return;
+    }
+    duplicates(d);
+    let l = layer::get(d);
     let doc = d.doc.clone();
     let ix = Index::of(&doc);
     let unused = l.unused_anchors();
     let mut missing: Vec<(usize, String, Option<(ShapeId, String)>)> = vec![];
-    let mut seen: Vec<(String, Option<Place>)> = vec![];
+    let mut seen: Vec<(String, Option<Place>, String)> = vec![];
     for a in &l.anchors {
         let place = resolve(&doc, &ix, a);
+        let mut was = a.was.clone();
         if let Some(p) = &place {
             let slide_missing = !ix.slides.contains_key(&a.slide_key);
             let shape_missing = !a.shape_key.is_empty() && !ix.shapes.contains_key(&a.shape_key);
             if slide_missing || shape_missing {
                 missing.push((p.slide, a.slide_key.clone(), p.shape.map(|id| (id, a.shape_key.clone()))));
             }
+            was = crate::topics::whereabouts(&doc, p);
         }
-        seen.push((a.id.clone(), place));
+        seen.push((a.id.clone(), place, was));
     }
-    let changed = seen.iter().any(|(id, p)| match (l.anchor(id), p) {
+    let changed = seen.iter().any(|(id, p, was)| match (l.anchor(id), p) {
         (Some(a), Some(p)) => {
             let sl = doc.slides.get(p.slide);
-            a.slide != p.slide || a.lost || sl.is_some_and(|s| s.id.0 != a.slide_id) || p.shape.is_some_and(|s| s.0 != a.shape_id)
+            a.slide != p.slide || a.lost || &a.was != was || sl.is_some_and(|s| s.id.0 != a.slide_id) || p.shape.is_some_and(|s| s.0 != a.shape_id)
         }
         (Some(a), None) => !a.lost,
         _ => false,
     });
-    if changed || !unused.is_empty() {
+    // Copies whose shape went away (an undone duplicate) go with it.
+    let gone_copies: Vec<String> = l
+        .topics
+        .iter()
+        .flat_map(|t| t.places.iter())
+        .filter(|p| !p.copy_of.is_empty() && p.anchors.iter().all(|a| seen.iter().any(|(id, w, _)| id == a && w.is_none())))
+        .map(|p| p.id.clone())
+        .collect();
+    if changed || !unused.is_empty() || !gone_copies.is_empty() {
         layer::update(d, |l| {
-            for (id, p) in &seen {
+            for (id, p, was) in &seen {
                 let Some(a) = l.anchors.iter_mut().find(|a| &a.id == id) else { continue };
                 match p {
                     Some(p) => {
                         a.slide = p.slide;
                         a.lost = false;
+                        a.was = was.clone();
                         if let Some(sl) = doc.slides.get(p.slide) {
                             a.slide_id = sl.id.0;
                             if let Some(sh) = p.shape.and_then(|id| sl.shape(id)) {
@@ -240,6 +270,9 @@ pub fn refresh(d: &mut DocState) {
                     None => a.lost = true,
                 }
             }
+            for t in &mut l.topics {
+                t.places.retain(|p| !gone_copies.contains(&p.id));
+            }
             l.anchors.retain(|a| !unused.contains(&a.id));
         });
     }
@@ -250,6 +283,119 @@ pub fn refresh(d: &mut DocState) {
         }
         d.revision += 1;
     }
+    let stamp = (Arc::as_ptr(&d.doc) as usize, layer::get(d).revision);
+    REFRESHED.with(|r| r.borrow_mut().insert(d.uid, stamp));
+}
+
+/// A slide or shape that carries a key another one already has was duplicated (Duplicate, copy
+/// and paste, a duplicated slide): it gets a key of its own, and every place on the original gets
+/// a place on the copy in the same topic (TOPICS.md §2a). The occurrence the anchor last saw keeps
+/// the key.
+fn duplicates(d: &mut DocState) {
+    let doc = d.doc.clone();
+    let ix = Index::of(&doc);
+    let l = layer::get(d);
+    let mut slide_dups: Vec<(String, usize)> = vec![];
+    for (k, at) in &ix.all_slides {
+        if at.len() < 2 || !l.anchors.iter().any(|a| &a.slide_key == k) {
+            continue;
+        }
+        let keeper = l
+            .anchors
+            .iter()
+            .find(|a| &a.slide_key == k)
+            .and_then(|a| at.iter().copied().find(|i| doc.slides.get(*i).is_some_and(|s| s.id.0 == a.slide_id)))
+            .unwrap_or(at[0]);
+        slide_dups.extend(at.iter().copied().filter(|i| *i != keeper).map(|i| (k.clone(), i)));
+    }
+    let mut shape_dups: Vec<(String, usize, ShapeId)> = vec![];
+    for (k, at) in &ix.all_shapes {
+        if at.len() < 2 || !l.anchors.iter().any(|a| &a.shape_key == k) {
+            continue;
+        }
+        let keeper =
+            l.anchors.iter().find(|a| &a.shape_key == k).and_then(|a| at.iter().copied().find(|(_, id)| id.0 == a.shape_id)).unwrap_or(at[0]);
+        shape_dups.extend(at.iter().copied().filter(|x| *x != keeper).map(|(i, id)| (k.clone(), i, id)));
+    }
+    if slide_dups.is_empty() && shape_dups.is_empty() {
+        return;
+    }
+    // New keys for the copies (in the presentation), new anchors and places (in the layer).
+    let mut new_slide_keys: Vec<(usize, String, String)> = vec![];
+    let mut new_shape_keys: Vec<(usize, ShapeId, String, String)> = vec![];
+    layer::update(d, |l| {
+        for (old, i) in &slide_dups {
+            new_slide_keys.push((*i, old.clone(), fresh_key(l)));
+        }
+        for (old, i, id) in &shape_dups {
+            new_shape_keys.push((*i, *id, old.clone(), fresh_key(l)));
+        }
+        let mut copies: Vec<(String, String)> = vec![];
+        for (i, old, new) in &new_slide_keys {
+            let olds: Vec<Anchor> = l.anchors.iter().filter(|a| &a.slide_key == old && a.shape_key.is_empty()).cloned().collect();
+            for a in olds {
+                let id = l.fresh_id("a");
+                l.anchors.push(Anchor { id: id.clone(), slide_key: new.clone(), slide: *i, lost: false, ..a.clone() });
+                copies.push((a.id, id));
+            }
+        }
+        for (i, sid, old, new) in &new_shape_keys {
+            let slide_key = doc.slides.get(*i).and_then(|s| key_of(&s.tags)).map(str::to_string);
+            let slide_key = new_slide_keys.iter().find(|(j, _, _)| j == i).map(|(_, _, k)| k.clone()).or(slide_key).unwrap_or_default();
+            let olds: Vec<Anchor> = l.anchors.iter().filter(|a| &a.shape_key == old).cloned().collect();
+            for a in olds {
+                let id = l.fresh_id("a");
+                l.anchors.push(Anchor {
+                    id: id.clone(),
+                    slide_key: slide_key.clone(),
+                    shape_key: new.clone(),
+                    slide: *i,
+                    shape_id: sid.0,
+                    lost: false,
+                    ..a.clone()
+                });
+                copies.push((a.id, id));
+            }
+        }
+        // Each place on an original gains a place on the copy, in the same topic.
+        let mut added: Vec<(usize, layer::Place)> = vec![];
+        for (ti, t) in l.topics.iter().enumerate() {
+            for p in t.places.iter().filter(|p| !p.rejected) {
+                let on_copy: Vec<String> = p.anchors.iter().filter_map(|a| copies.iter().find(|(o, _)| o == a).map(|(_, c)| c.clone())).collect();
+                if !on_copy.is_empty() {
+                    added.push((
+                        ti,
+                        layer::Place {
+                            id: String::new(),
+                            anchors: on_copy,
+                            reason: p.reason.clone(),
+                            by: p.by,
+                            rejected: false,
+                            copy_of: p.id.clone(),
+                        },
+                    ));
+                }
+            }
+        }
+        for (ti, mut p) in added {
+            p.id = l.fresh_id("p");
+            if let Some(t) = l.topics.get_mut(ti) {
+                t.places.push(p);
+            }
+        }
+    });
+    let doc = Arc::make_mut(&mut d.doc);
+    for (i, _, new) in &new_slide_keys {
+        if let Some(sl) = doc.slides.get_mut(*i) {
+            set_key(&mut Arc::make_mut(sl).tags, new);
+        }
+    }
+    for (i, id, _, new) in &new_shape_keys {
+        if let Some(sh) = doc.slides.get_mut(*i).and_then(|sl| Arc::make_mut(sl).shape_mut(*id)) {
+            set_key(&mut sh.tags, new);
+        }
+    }
+    d.revision += 1;
 }
 
 /// The shapes of a slide that hold text, in reading order of the tree (groups included).

@@ -399,6 +399,10 @@ pub fn question_text(s: &Session, q: &Json) -> String {
     let title = s.doc().map(|d| d.title()).unwrap_or_default();
     let place = q.pointer("/where/label").and_then(Json::as_str).unwrap_or("the deck");
     let mut t = format!("A question was asked in the presentation “{title}”, on {place}:\n\n“{}”\n\nQuestion id: {}.", get("text"), get("id"));
+    if let Some(n) = q.pointer("/topic/number").and_then(Json::as_u64) {
+        let st = q.pointer("/topic/status").and_then(Json::as_str).unwrap_or("open");
+        t.push_str(&format!(" It belongs to topic {n} ({st}): get_topic for its places, notes and discussion so far."));
+    }
     t.push_str(
         " Claim it (claim_question), investigate with the deckcraft tools, and answer with answer_question, linking the slides and sources you used.",
     );

@@ -1,7 +1,7 @@
 //! The Agent tab on the ribbon: what isn't about one piece of content. Groups named the same in
 //! GridCraft, WordCraft and DeckCraft:
 //!
-//! - **Agent**: the pane, with what is waiting under it (`1 ready`, `2 waiting`, `1 in work`, `idle`);
+//! - **Agent**: the pane, with readiness for sign-off under it (`Agreed 3 of 5 · 1 new`);
 //! - **Client data**: mark or unmark the selection;
 //! - **Connection**: Connect Cowork (Claude Desktop's local servers) with where it stands, whether
 //!   the server listens and an agent is active, Copy Claude Code command;
@@ -11,8 +11,8 @@
 //! Keytip **A** (Alt, A; F10, A on macOS) opens the tab.
 
 use deckcraft_agent::cowork::Configured;
-use deckcraft_agent::layer::{self, QuestionStatus};
-use deckcraft_agent::links;
+use deckcraft_agent::layer;
+use deckcraft_agent::{links, topics};
 use deckcraft_ui_egui::SlideApp;
 use deckcraft_ui_egui::icons::{self, Icon};
 use deckcraft_ui_egui::theme::{self, Tokens};
@@ -172,9 +172,9 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui) {
     let p = palette(&t);
     let Some(d) = app.session.active() else { return };
     let l = layer::get(d);
-    let ready = l.asked().filter(|q| q.status == QuestionStatus::Answered && !q.seen).count();
-    let waiting = l.asked().filter(|q| q.status == QuestionStatus::Pending).count();
-    let working = l.asked().filter(|q| q.status == QuestionStatus::Working).count();
+    let ready: usize = topics::visible(&l).map(|x| topics::unread(&l, x)).sum();
+    let working = topics::visible(&l).filter(|x| topics::working(&l, x)).count();
+    let (all, agreed, revise, open, info) = topics::readiness(&l);
     let all_links = links::all(&d.doc);
     let checks: Vec<Option<links::Check>> = all_links.iter().map(|(_, _, k)| links::last_check(&k.id)).collect();
     let stale: Vec<u32> = all_links
@@ -186,22 +186,35 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui) {
     let broken = checks.iter().filter(|c| c.as_ref().is_some_and(|c| matches!(c.state, links::State::Missing | links::State::Error))).count();
     let marks = l.private.len();
 
-    // Agent: the pane, and what is waiting.
+    // Agent: the pane, with readiness for sign-off under it (and what is new).
     group(ui, |ui| {
-        let sub = if ready > 0 {
-            (format!("{ready} ready"), p.answered)
-        } else if waiting > 0 {
-            (format!("{waiting} waiting"), p.pending)
-        } else if working > 0 {
-            (format!("{working} in work"), p.working)
+        let sub = if all == 0 {
+            ("no topics".to_string(), t.text_faint)
         } else {
-            ("idle".to_string(), t.text_faint)
+            let color = if ready > 0 {
+                p.answered
+            } else if working > 0 {
+                p.working
+            } else if revise > 0 {
+                p.revise
+            } else if open > 0 {
+                p.open
+            } else {
+                p.agreed
+            };
+            let mut s = format!("Agreed {agreed} of {}", all - info);
+            if ready > 0 {
+                s.push_str(&format!(" · {ready} new"));
+            } else if working > 0 {
+                s.push_str(" · in work");
+            }
+            (s, color)
         };
-        let tip = "The Agent pane: this slide's questions and prepared answers, notes, linked cells, the history (keytip A)";
+        let tip = format!("The Agent pane: the selection's topics, the overview, the history (keytip A)\n{}", topics::readiness_text(&l));
         if status_button(ui, Icon::Sparkle, "Agent", Some((&sub.0, sub.1)), true, st.open).on_hover_text(tip).clicked() {
             st.open = !st.open;
-            if st.open && (ready > 0 || waiting > 0 || working > 0) {
-                st.tab = Tab::Questions;
+            if st.open && ready > 0 {
+                st.tab = Tab::Overview;
             }
         }
     });
@@ -242,12 +255,12 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui) {
         } else {
             ("up to date".to_string(), p.linked)
         };
-        if status_button(ui, Icon::Table, "Linked\nCells", Some((&sub, color)), n > 0, st.open && st.tab == Tab::Links)
-            .on_hover_text("Tables and pictures linked to spreadsheet cells: details in the pane")
+        if status_button(ui, Icon::Table, "Linked\nCells", Some((&sub, color)), n > 0, false)
+            .on_hover_text("Tables and pictures linked to spreadsheet cells: details in the pane's Overview")
             .clicked()
         {
             st.open = true;
-            st.tab = Tab::Links;
+            st.tab = Tab::Overview;
         }
         rows(ui, |ui| {
             if small_button(ui, Icon::Redo, "Check Now", n > 0, false)
