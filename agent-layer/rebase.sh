@@ -67,7 +67,7 @@ done
 for hook in "ext::before" "ext::after" "ext::intercept" "ext::commands()" "crate::ext::find"; do
   git grep -q "$hook" -- crates/engine/src/lib.rs crates/engine/src/cmd/mod.rs || { echo "engine hook $hook is no longer called" >&2; exit 1; }
 done
-for hook in "ext::frame" "ext::side_panels" "ext::paint_slide" "ext::context_menu" "ext::presenter_notes"; do
+for hook in "ext::frame" "ext::side_panels" "ext::paint_slide" "ext::context_menu" "ext::presenter_notes" "ext::ribbon_tabs" "ext::ribbon_tab("; do
   git grep -q "$hook" -- crates/ui-egui/src || { echo "UI hook $hook is no longer called" >&2; exit 1; }
 done
 

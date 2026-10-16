@@ -16,6 +16,11 @@ DeckCraft runs an MCP server itself: `http://127.0.0.1:7984/mcp`. If its tools (
 `claude mcp add --transport http deckcraft http://127.0.0.1:7984/mcp` (or check DeckCraft is open:
 `curl -s http://127.0.0.1:7984/health` prints `ok`).
 
+In Claude Desktop or Cowork the same tools come from the local `deckcraft` server
+(`deckcraft --agent-stdio`); the user adds it with **Agent ▸ Connect Cowork** on DeckCraft's
+ribbon, then quits Claude (⌘Q) and reopens it. If a tool says "DeckCraft isn't open", ask the
+user to open DeckCraft, then call it again.
+
 ## Watch for questions
 
 Start a background monitor on the event stream; each line is a new question:
@@ -24,8 +29,11 @@ Start a background monitor on the event stream; each line is a new question:
 curl -sN http://127.0.0.1:7984/events
 ```
 
-(With the Monitor tool: run that command as the monitored process.) Without a monitor, call
-`wait_for_questions` in a loop. On startup also call `list_questions` with status `open`.
+(With the Monitor tool: run that command as the monitored process.) Without a monitor (Claude
+Desktop, Cowork: there is no event stream over stdio), call `wait_for_questions` in a loop: each
+call returns as soon as a question is pending, or empty after up to 50 s; answer what it returned,
+then call it again. Stop when the user says so. On startup also call `list_questions` with status
+`open`: questions asked before you connected are waiting too.
 
 ## For each question
 

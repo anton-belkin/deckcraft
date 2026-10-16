@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "deckcraft": {
+      "command": "/Users/antonbelkin/deckcraft-fork/target/release/deckcraft",
+      "args": ["--agent-stdio"]
+    }
+  }
+}
