@@ -116,6 +116,27 @@ fn demo(dir: &std::path::Path) -> (Session, ShapeId) {
         "agent.note",
         json!({"topic": t1, "kind": "source", "actor": "agent", "title": "Q3 management accounts", "text": "Constant currency, restated Q2.", "url": "https://example.com/finance/q3", "summary": "Finance pack, 14 Oct: management accounts for Q2 and Q3."}),
     );
+    // The agent proposes two wordings for the growth line (the person applies one in the document).
+    run(
+        &mut s,
+        "agent.exec",
+        json!({"actor": "agent", "topic": t1, "command": "text.set", "params": {"id": growth, "text": "Revenue grew 6% at constant currency to 2.94M"}, "reason": "say the basis"}),
+    );
+    run(
+        &mut s,
+        "agent.describeOption",
+        json!({"actor": "agent", "topic": t1, "option": "A", "title": "Say the basis", "why": "both quarters are at constant currency"}),
+    );
+    run(
+        &mut s,
+        "agent.exec",
+        json!({"actor": "agent", "topic": t1, "option": "B", "command": "text.set", "params": {"id": growth, "text": "Revenue grew 6% to 2.94M (Q2 restated for West)"}, "reason": "name the restatement"}),
+    );
+    run(
+        &mut s,
+        "agent.describeOption",
+        json!({"actor": "agent", "topic": t1, "option": "B", "title": "Name the restatement", "why": "the board saw the old Q2 figure"}),
+    );
     // The table: the agent is working on it.
     run(&mut s, "agent.claim", json!({"id": q2, "actor": "agent"}));
     // Slide 2's prepared answers: for information.

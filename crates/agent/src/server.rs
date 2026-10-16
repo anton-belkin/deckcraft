@@ -297,6 +297,7 @@ fn events(mut w: TcpStream, control: &str, document: Option<String>) {
     let _watching = Watching::new(&MONITORS);
     let mut seen: HashSet<String> = HashSet::new();
     let mut slot: Option<Remote> = None;
+    let mut last_event = 0u64;
     loop {
         let mut lost = false;
         if let Ok(b) = backend(&mut slot, control) {
@@ -333,6 +334,25 @@ fn events(mut w: TcpStream, control: &str, document: Option<String>) {
                 }
                 Ok(_) => {}
                 Err(_) => lost = true,
+            }
+            // What happened to proposals: applied, rejected (with the comment), out of date.
+            let mut params = json!({"after": last_event, "actor": "agent", "poll": true});
+            if let Some(d) = &document {
+                params["document"] = json!(d);
+            }
+            if let Ok(Value::Array(list)) = b.call("engine.execute", json!({"command": "agent.proposalEvents", "params": params})) {
+                for e in list {
+                    last_event = last_event.max(e.get("seq").and_then(Value::as_u64).unwrap_or(0));
+                    let mut line = e.clone();
+                    line["hint"] = json!(match e.get("event").and_then(Value::as_str) {
+                        Some("proposal_outdated") => "the deck changed under your proposal: read the topic again and redo it",
+                        Some("proposal_rejected") => "the person rejected your proposal; their comment also comes as a question in the topic",
+                        _ => "the person applied your proposal",
+                    });
+                    if writeln!(w, "{line}").and_then(|()| w.flush()).is_err() {
+                        return;
+                    }
+                }
             }
             // Questions the person took back while the agent worked on them.
             let mut params = json!({"status": "withdrawn", "actor": "agent", "masked": true, "poll": true});

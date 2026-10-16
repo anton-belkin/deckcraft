@@ -149,6 +149,10 @@ pub(crate) fn paint(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui, painter: 
             }
         }
     }
+    // The agents' proposals on this slide, as the option shown in the pane would leave it.
+    if st.open {
+        previews(st, d, &l, painter, geo, &p, &t);
+    }
     // Topic markers: at the shape's top-right corner, the slide's own at the slide's.
     let nums = topics::numbers_of(d, &l);
     let mut clicked: Option<(String, String)> = None;
@@ -193,6 +197,86 @@ pub(crate) fn paint(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui, painter: 
         && !egui::Popup::is_any_open(ui.ctx())
     {
         hover_card(ui, &t, &p, &link, r, geo);
+    }
+}
+
+fn dashed(painter: &egui::Painter, r: Rect, stroke: Stroke) {
+    let pts = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()];
+    for w in pts.windows(2) {
+        painter.extend(egui::Shape::dashed_line(w, stroke, 6.0, 4.0));
+    }
+}
+
+/// A small label under a shape: what the proposal makes of it.
+fn callout(painter: &egui::Painter, t: &Tokens, under: Rect, color: Color32, head: &str, body: &str) {
+    let short: String = body.chars().take(160).collect();
+    let text = if body.chars().count() > 160 { format!("{short}…") } else { short };
+    let mut job = egui::text::LayoutJob::default();
+    job.wrap.max_width = 300.0;
+    job.append(head, 0.0, egui::TextFormat { font_id: theme::bold(11.0), color, ..Default::default() });
+    if !text.is_empty() {
+        job.append(&format!("\n{text}"), 0.0, egui::TextFormat { font_id: theme::font(11.0), color: t.text, ..Default::default() });
+    }
+    let g = painter.layout_job(job);
+    let r = Rect::from_min_size(pos2(under.left(), under.bottom() + 6.0), g.size() + vec2(12.0, 8.0));
+    painter.rect_filled(r, CornerRadius::same(4), t.card);
+    painter.rect_stroke(r, CornerRadius::same(4), Stroke::new(1.0, color), egui::StrokeKind::Inside);
+    painter.galley(r.min + vec2(6.0, 4.0), g, t.text);
+}
+
+/// Pending proposals touching the edited slide: the shapes the shown option changes, outlined,
+/// with their new text; shapes it removes, and shapes it adds where they would go.
+fn previews(st: &AgentUi, d: &deckcraft_engine::DocState, l: &layer::Layer, painter: &egui::Painter, geo: &SlideGeometry, p: &Palette, t: &Tokens) {
+    use deckcraft_agent::proposals::{self, State};
+    let slide = d.selection.slide;
+    let Some(real) = d.doc.slides.get(slide) else { return };
+    let ix = Index::of(&d.doc);
+    let to_rect = |doc: &deckcraft_engine::model::Presentation, i: usize, sh: &Shape| {
+        let x = deckcraft_engine::cmd::xfrm_of(doc, &deckcraft_engine::Selection { slide: i, ..Default::default() }, sh);
+        screen(geo, &x)
+    };
+    let nums = topics::numbers_of(d, l);
+    for tp in topics::visible(l) {
+        let Some(prop) = tp.draft.as_ref().filter(|x| matches!(x.state, State::Pending | State::Outdated)) else { continue };
+        let Some(opt) = crate::pane::shown_option(st, &tp.id, prop) else { continue };
+        let Some(c) = prop.option(&opt) else { continue };
+        if !proposals::touched_now(&d.doc, &ix, l, c).iter().any(|w| w.slide == slide) {
+            continue;
+        }
+        let Some(draft) = proposals::draft(d, &tp.id, c) else { continue };
+        let head = format!("Topic {} · option {opt}", nums.topic(&tp.id));
+        let Some((di, ds)) = draft.slides.iter().enumerate().find(|(_, x)| x.id == real.id) else {
+            dashed(painter, geo.slide.shrink(4.0), Stroke::new(2.0, p.revise));
+            callout(
+                painter,
+                t,
+                Rect::from_min_size(geo.slide.left_top() + vec2(8.0, 8.0), vec2(0.0, 0.0)),
+                p.revise,
+                &format!("{head}: removes this slide"),
+                "",
+            );
+            continue;
+        };
+        let stroke = Stroke::new(2.0, p.agent);
+        for sh in &ds.shapes {
+            match real.shapes.iter().find(|x| x.id == sh.id) {
+                Some(old) if old == sh => {}
+                old => {
+                    let r = to_rect(&draft, di, sh);
+                    dashed(painter, r.expand(3.0), stroke);
+                    let text = sh.text.as_ref().map(|x| x.text()).unwrap_or_default();
+                    let what = if old.is_none() { "adds" } else { "changes" };
+                    callout(painter, t, r, p.agent, &format!("{head} {what}"), &text);
+                }
+            }
+        }
+        for sh in &real.shapes {
+            if !ds.shapes.iter().any(|x| x.id == sh.id) {
+                let r = to_rect(&d.doc, slide, sh);
+                dashed(painter, r.expand(3.0), Stroke::new(2.0, p.revise));
+                callout(painter, t, r, p.revise, &format!("{head} removes it"), "");
+            }
+        }
     }
 }
 

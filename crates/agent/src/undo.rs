@@ -62,6 +62,13 @@ pub enum Op {
     Reject {
         place: String,
     },
+    /// A proposal applied or rejected: its state before and after, and the decision note.
+    Draft {
+        topic: String,
+        before: Option<crate::proposals::Proposal>,
+        after: Option<crate::proposals::Proposal>,
+        note: Option<String>,
+    },
     /// What the agent knows for the document (mode, web, folder).
     Context {
         before: Option<crate::context::Context>,
@@ -84,6 +91,8 @@ impl Op {
             Op::AddNote { .. } => "Add Note",
             Op::Reject { .. } => "Reject Place",
             Op::Context { .. } => "Agent Context",
+            Op::Draft { note: Some(_), .. } => "Apply Proposal",
+            Op::Draft { .. } => "Reject Proposal",
         }
     }
 
@@ -127,6 +136,12 @@ impl Op {
             Op::AddNote { note } => removed(l, note, true),
             Op::Reject { place } => Op::places(l, std::slice::from_ref(place), false),
             Op::Context { before, .. } => l.context = before.clone(),
+            Op::Draft { topic, before, note, .. } => {
+                set_draft(l, topic, before);
+                if let Some(n) = note {
+                    removed(l, n, true);
+                }
+            }
         }
     }
 
@@ -156,6 +171,12 @@ impl Op {
             Op::AddNote { note } => removed(l, note, false),
             Op::Reject { place } => Op::places(l, std::slice::from_ref(place), true),
             Op::Context { after, .. } => l.context = after.clone(),
+            Op::Draft { topic, after, note, .. } => {
+                set_draft(l, topic, after);
+                if let Some(n) = note {
+                    removed(l, n, false);
+                }
+            }
         }
     }
 }
@@ -182,6 +203,12 @@ fn private(l: &mut Layer, anchor: &str, on: bool) {
     l.private.retain(|a| a != anchor);
     if on {
         l.private.push(anchor.to_string());
+    }
+}
+
+fn set_draft(l: &mut Layer, topic: &str, v: &Option<crate::proposals::Proposal>) {
+    if let Some(t) = l.topics.iter_mut().find(|t| t.id == topic) {
+        t.draft = v.clone();
     }
 }
 

@@ -88,6 +88,24 @@ upstream. Each one accepted upstream removes its lines from the patch.
   key is a shortcut, a tap is nothing, Esc cancels, and a voice ⌥ never arms the Agent tab's
   keytip. `agent.voiceModel {model: off|small|turbo}`, `agent.voiceStatus`. craft-voice needs a
   `zip` that crates.io yanked; `rebase.sh` seeds it back into upstream's lock.
+- **Proposals instead of direct edits** (`crates/agent/src/proposals.rs`, the surface shared with
+  GridCraft and WordCraft). `run_command {…, topic, option?}` doesn't change the deck: the command
+  runs on the topic's draft (a scratch session with a copy of the accepted deck and the option's
+  commands replayed, each on the slide it was recorded for), which validates it, and is recorded in
+  the topic's proposal (`option` defaults to A). `describe_option {topic, option, title, why}`,
+  `discard_proposal {topic, option?}`. What each option touches (shapes changed or removed, slides)
+  is kept as anchors; `read_slides` marks those shapes `pending: [{topic, option, summary}]`,
+  `read_slides {view: "proposal", topic, option?}` reads the draft, `list_topics`/`get_topic` show
+  `proposal: {options: [{option, title, why, changes}], state}`, questions carry `pendingNearby`,
+  and `/events` streams `proposal_applied`, `proposal_rejected` (with the comment) and
+  `proposal_outdated`. The card: "The agent proposes N changes", the option tabs (switching changes
+  the preview on the slide: the changed shapes outlined, dashed, with their new text; removed and
+  added shapes too), **Apply option X** / **Reject** (an optional comment, which also reaches the
+  agent as a follow-up question in the topic). Apply replays the commands on a copy of the deck and
+  swaps it in as **one** undo step (`ext::push_step` first, so undo brings back both the deck and the
+  pending proposal), the person's action, with a decision note "chose X: <title>"; pending
+  proposals touching the same shapes become out of date. A step that no longer fits applies
+  nothing: "out of date, ask the agent to redo".
 - **Links inside text are anchors.** `[slide 4](slide:4)`, `shape:`, `place:`, `topic:`, `note:`
   and a plain "slide 4" are stored as `anchor:<id>` (or topic and place ids) when an answer, note,
   status text or question is stored, and shown with the current address: insert a slide before it

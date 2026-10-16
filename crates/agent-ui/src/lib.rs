@@ -127,6 +127,10 @@ pub(crate) struct AgentUi {
     pub filters: HashSet<Filter>,
     /// A copy to send includes the discussion.
     pub send_discussion: bool,
+    /// The option of each topic's proposal shown (and previewed on the slide).
+    pub options: std::collections::HashMap<String, String>,
+    /// A reject being written: topic, comment.
+    pub reject_edit: Option<(String, String)>,
     /// Presenter View shows the topic markers (the presenter turns them on).
     pub presenter_markers: bool,
     #[cfg(not(target_arch = "wasm32"))]

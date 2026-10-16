@@ -327,6 +327,9 @@ pub fn json(d: &DocState, l: &Layer, nums: &Numbers, t: &Topic, full: bool, rend
     if !t.proposal.is_empty() {
         o["proposedAgreed"] = json!(render(&t.proposal));
     }
+    if let Some(prop) = &t.draft {
+        o["proposal"] = crate::proposals::json(prop, render);
+    }
     if full {
         let disc: Vec<Json> = l
             .questions

@@ -260,3 +260,28 @@ fn presenter_view_offers_the_markers_toggle() {
     h.run_steps(2);
     h.get_by_label("Show topic markers on the slide");
 }
+
+#[test]
+fn the_card_shows_the_agent_s_proposal_and_applies_the_option_shown() {
+    let (mut s, id) = deck_with_box("Revenue grew 42%");
+    let t = s.execute("agent.ask", &json!({"text": "Shorter?", "slide": 2, "shape": id})).unwrap()["topicId"].as_str().unwrap().to_string();
+    for (o, text) in [("A", "Revenue +42%"), ("B", "Revenue up 42%")] {
+        s.execute(
+            "agent.exec",
+            &json!({"actor": "agent", "topic": t, "option": o, "command": "text.set", "params": {"id": id, "text": text}, "reason": "shorter"}),
+        )
+        .unwrap();
+    }
+    crate::request_pane(true, "selection");
+    let mut h = harness(s);
+    h.get_by_label("The agent proposes 1 change");
+    // Option B shown, then applied.
+    h.get_by_label("Option B").click();
+    h.run_steps(2);
+    h.get_by_label("Apply option B").click();
+    h.run_steps(3);
+    let d = h.state().session.active().unwrap();
+    let text = d.doc.slides[1].shapes.iter().find(|x| u64::from(x.id.0) == id).and_then(|x| x.text.as_ref()).map(|x| x.text()).unwrap();
+    assert_eq!(text, "Revenue up 42%");
+    h.get_by_label_contains("Applied option B");
+}

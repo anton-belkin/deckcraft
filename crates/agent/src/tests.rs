@@ -1350,3 +1350,107 @@ fn a_spoken_question_waits_for_its_text_and_its_pointing_becomes_places() {
     // A question with the agent can't be dismissed that way.
     assert!(s.execute("agent.removeQuestion", &json!({"id": id})).is_err());
 }
+
+// ---------------------------------------------------------------- proposals (next-brief B)
+
+fn text_of(s: &Session, id: ShapeId) -> String {
+    let d = s.doc().unwrap();
+    d.doc.slides.iter().find_map(|sl| sl.shape(id)).and_then(|sh| sh.text.as_ref()).map(|t| t.text()).unwrap_or_default()
+}
+
+#[test]
+fn in_a_topic_run_command_proposes_and_the_person_applies_one_option_as_one_undo_step() {
+    let (mut s, _, numbers) = deck();
+    let t = run(&mut s, "agent.ask", json!({"text": "Shorter?", "slide": 2, "shape": numbers.0}))["topicId"].as_str().unwrap().to_string();
+    let before = text_of(&s, numbers);
+    // Option A and option B: recorded, the deck untouched.
+    let r = run(
+        &mut s,
+        "agent.exec",
+        json!({"actor": "agent", "topic": t, "command": "text.set", "params": {"id": numbers.0, "text": "Revenue +42% (18.4M)"}, "reason": "shorter"}),
+    );
+    assert_eq!(r["proposed"], true);
+    run(
+        &mut s,
+        "agent.exec",
+        json!({"actor": "agent", "topic": t, "option": "B", "command": "text.set", "params": {"id": numbers.0, "text": "Revenue grew to 18.4M"}, "reason": "without the percentage"}),
+    );
+    run(
+        &mut s,
+        "agent.describeOption",
+        json!({"actor": "agent", "topic": t, "option": "B", "title": "Drop the percentage", "why": "the base changed on slide 2"}),
+    );
+    assert_eq!(text_of(&s, numbers), before, "a proposal doesn't change the deck");
+    // A command that doesn't fit is refused and not recorded.
+    assert!(s.execute("agent.exec", &json!({"actor": "agent", "topic": t, "command": "text.set", "params": {"id": 99_999, "text": "x"}})).is_err());
+    // What the agent reads: the proposal, the shape it touches, the draft.
+    let topic = run(&mut s, "agent.topic", json!({"topic": t, "actor": "agent"}));
+    assert_eq!(topic["proposal"]["state"], "pending");
+    assert_eq!(topic["proposal"]["options"].as_array().unwrap().len(), 2);
+    assert_eq!(topic["proposal"]["options"][1]["title"], "Drop the percentage");
+    let read = run(&mut s, "agent.read", json!({"slide": 2, "actor": "agent"}));
+    let sh = read["slides"][0]["shapes"].as_array().unwrap().iter().find(|x| x["id"] == numbers.0).unwrap().clone();
+    assert_eq!(sh["pending"].as_array().unwrap().len(), 2, "{sh}");
+    let view = run(&mut s, "agent.read", json!({"slide": 2, "actor": "agent", "view": "proposal", "topic": t, "option": "B"}));
+    assert!(view.to_string().contains("Revenue grew to 18.4M"));
+    // The agent can't apply its own proposal.
+    assert!(s.execute("agent.applyProposal", &json!({"topic": t, "actor": "agent"})).is_err());
+    // The person applies B: the deck changes in one undo step, with a decision note.
+    run(&mut s, "agent.applyProposal", json!({"topic": t, "option": "B"}));
+    assert_eq!(text_of(&s, numbers), "Revenue grew to 18.4M");
+    let l = crate::active_layer(&s).unwrap();
+    assert_eq!(l.topic(&t).unwrap().draft.as_ref().unwrap().state, crate::proposals::State::Applied);
+    assert!(l.notes.iter().any(|n| n.topic == t && n.title == "chose B: Drop the percentage" && n.author == crate::Actor::Human));
+    assert!(l.events.iter().any(|e| e.event == "proposal_applied" && e.option == "B"));
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(text_of(&s, numbers), before, "one undo takes the whole option back");
+    let l = crate::active_layer(&s).unwrap();
+    assert_eq!(l.topic(&t).unwrap().draft.as_ref().unwrap().state, crate::proposals::State::Pending);
+    assert!(l.notes.iter().filter(|n| n.topic == t).all(|n| n.deleted));
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(text_of(&s, numbers), "Revenue grew to 18.4M");
+}
+
+#[test]
+fn applying_one_proposal_outdates_the_overlapping_ones_and_a_step_that_no_longer_fits_applies_nothing() {
+    let (mut s, client, numbers) = deck();
+    let t1 = run(&mut s, "agent.ask", json!({"text": "Wording?", "slide": 2, "shape": numbers.0}))["topicId"].as_str().unwrap().to_string();
+    let t2 = run(&mut s, "agent.ask", json!({"text": "Other wording?", "slide": 2, "shape": numbers.0, "new": true}))["topicId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let t3 = run(&mut s, "agent.ask", json!({"text": "Client line?", "slide": 2, "shape": client.0}))["topicId"].as_str().unwrap().to_string();
+    for (t, id, text) in [(&t1, numbers, "One"), (&t2, numbers, "Two"), (&t3, client, "Prepared for the client")] {
+        run(&mut s, "agent.exec", json!({"actor": "agent", "topic": t, "command": "text.set", "params": {"id": id.0, "text": text}}));
+    }
+    run(&mut s, "agent.applyProposal", json!({"topic": t1}));
+    let l = crate::active_layer(&s).unwrap();
+    assert_eq!(l.topic(&t2).unwrap().draft.as_ref().unwrap().state, crate::proposals::State::Outdated, "same shape");
+    assert_eq!(l.topic(&t3).unwrap().draft.as_ref().unwrap().state, crate::proposals::State::Pending, "another shape");
+    assert!(l.events.iter().any(|e| e.event == "proposal_outdated" && e.topic == t2));
+    // The person deletes the client line: t3's step no longer fits, nothing is applied.
+    run(&mut s, "selection.select", json!({"ids": [client.0]}));
+    run(&mut s, "edit.delete", json!({}));
+    let e = s.execute("agent.applyProposal", &json!({"topic": t3})).unwrap_err().to_string();
+    assert!(e.contains("out of date, ask the agent to redo"), "{e}");
+    assert_eq!(crate::active_layer(&s).unwrap().topic(&t3).unwrap().draft.as_ref().unwrap().state, crate::proposals::State::Outdated);
+}
+
+#[test]
+fn a_reject_with_a_comment_comes_back_as_a_follow_up_and_is_undoable() {
+    let (mut s, _, numbers) = deck();
+    let t = run(&mut s, "agent.ask", json!({"text": "Shorter?", "slide": 2, "shape": numbers.0}))["topicId"].as_str().unwrap().to_string();
+    run(&mut s, "agent.exec", json!({"actor": "agent", "topic": t, "command": "text.set", "params": {"id": numbers.0, "text": "Short"}}));
+    run(&mut s, "agent.rejectProposal", json!({"topic": t, "comment": "keep the 42%"}));
+    let l = crate::active_layer(&s).unwrap();
+    assert_eq!(l.topic(&t).unwrap().draft.as_ref().unwrap().state, crate::proposals::State::Rejected);
+    assert!(l.events.iter().any(|e| e.event == "proposal_rejected" && e.comment == "keep the 42%"));
+    let pending = run(&mut s, "agent.questions", json!({"status": "pending", "actor": "agent"}));
+    assert!(pending.as_array().unwrap().iter().any(|q| q["text"].as_str().unwrap().contains("keep the 42%") && q["topic"]["id"] == t.as_str()));
+    // A new proposal near it shows up on the next question about that place.
+    run(&mut s, "agent.exec", json!({"actor": "agent", "topic": t, "command": "text.set", "params": {"id": numbers.0, "text": "Revenue grew 42%"}}));
+    let q = run(&mut s, "agent.ask", json!({"text": "And this?", "slide": 2, "shape": numbers.0}));
+    let list = run(&mut s, "agent.questions", json!({"status": "pending", "actor": "agent"}));
+    let mine = list.as_array().unwrap().iter().find(|x| x["id"] == q["id"]).unwrap().clone();
+    assert_eq!(mine["pendingNearby"].as_array().unwrap().len(), 1, "{mine}");
+}

@@ -33,6 +33,7 @@ pub mod listener;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mcp;
 pub mod privacy;
+pub mod proposals;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod registry;
 #[cfg(not(target_arch = "wasm32"))]

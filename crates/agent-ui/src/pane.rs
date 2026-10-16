@@ -9,6 +9,7 @@
 
 use deckcraft_agent::anchor::{Index, Place};
 use deckcraft_agent::layer::{self, Actor, Layer, Note, QuestionStatus, Status, Topic};
+use deckcraft_agent::proposals::{Proposal, State};
 use deckcraft_agent::topics::{self, Numbers};
 use deckcraft_agent::{anchor, links, textlinks};
 use deckcraft_engine::DocState;
@@ -100,7 +101,9 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui) {
             Act::Follow(href) => follow(st, app, &href),
             Act::Go(place) => go_to(app, &place),
             Act::Run(id, params) => {
-                let _ = app.run(id, params);
+                if let Err(e) = app.run(id, params) {
+                    app.set_status(e);
+                }
             }
             Act::Ask(id, params) => {
                 if let Ok(r) = app.run(id, params)
@@ -328,6 +331,10 @@ fn topic_card(st: &mut AgentUi, ui: &mut Ui, d: &DocState, l: &Layer, nums: &Num
                 }
             });
         }
+        // The agent's proposal: its options, Apply or Reject.
+        if let Some(prop) = &tp.draft {
+            proposal(st, ui, d, l, nums, tp, prop, t, p, acts);
+        }
         // Places.
         let mut places: Vec<&layer::Place> = topics::live(tp).collect();
         places.sort_by_key(|pl| nums.place(&pl.id));
@@ -426,6 +433,108 @@ fn topic_card(st: &mut AgentUi, ui: &mut Ui, d: &DocState, l: &Layer, nums: &Num
             if head.header_response.clicked() {
                 st.discussion.insert(tp.id.clone(), !open);
             }
+        }
+    });
+}
+
+/// The option of a topic's proposal shown (the first unless the person picked another).
+pub(crate) fn shown_option(st: &AgentUi, topic: &str, prop: &Proposal) -> Option<String> {
+    st.options.get(topic).filter(|o| prop.option(o).is_some()).cloned().or_else(|| prop.options.first().map(|c| c.option.clone()))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn proposal(
+    st: &mut AgentUi,
+    ui: &mut Ui,
+    d: &DocState,
+    l: &Layer,
+    nums: &Numbers,
+    tp: &Topic,
+    prop: &Proposal,
+    t: &Tokens,
+    p: &Palette,
+    acts: &mut Vec<Act>,
+) {
+    match prop.state {
+        State::Applied => {
+            let title = prop.option(&prop.chosen).map(|c| c.summary()).unwrap_or_default();
+            ui.label(RichText::new(format!("Applied option {}: {title}", prop.chosen)).small().color(p.agreed));
+            return;
+        }
+        State::Rejected => {
+            let line = if prop.comment.is_empty() {
+                "You rejected the agent's proposal".to_string()
+            } else {
+                format!("You rejected the agent's proposal: {}", prop.comment)
+            };
+            ui.label(RichText::new(line).small().color(t.text_dim));
+            return;
+        }
+        State::Pending | State::Outdated => {}
+    }
+    let Some(shown) = shown_option(st, &tp.id, prop) else { return };
+    let Some(c) = prop.option(&shown) else { return };
+    egui::Frame::NONE.fill(p.agent.gamma_multiply(0.10)).corner_radius(4.0).inner_margin(6.0).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        let n = c.changes.len();
+        ui.label(RichText::new(format!("The agent proposes {n} change{}", if n == 1 { "" } else { "s" })).small().strong().color(p.agent));
+        if prop.options.len() > 1 {
+            ui.horizontal_wrapped(|ui| {
+                for o in &prop.options {
+                    let on = o.option == shown;
+                    let label = if o.title.is_empty() { format!("Option {}", o.option) } else { format!("{} · {}", o.option, o.title) };
+                    let text =
+                        if on { RichText::new(label).small().strong().color(Color32::WHITE) } else { RichText::new(label).small().color(t.text_dim) };
+                    let b = if on { egui::Button::new(text).fill(p.agent).corner_radius(9.0) } else { egui::Button::new(text).frame(false) };
+                    if ui.add(b).on_hover_text("Shows this option on the slide").clicked() {
+                        st.options.insert(tp.id.clone(), o.option.clone());
+                    }
+                }
+            });
+        } else if !c.title.is_empty() {
+            ui.label(RichText::new(&c.title).strong().color(t.text));
+        }
+        if !c.why.is_empty() {
+            rich(ui, d, l, nums, &c.why, t.text, true, acts);
+        }
+        for ch in &c.changes {
+            ui.label(RichText::new(format!("· {}", ch.summary)).small().color(t.text_dim));
+        }
+        if prop.state == State::Outdated {
+            ui.label(RichText::new("Out of date, ask the agent to redo").small().strong().color(p.revise));
+        }
+        let mut done = false;
+        match st.reject_edit.as_mut().filter(|(id, _)| *id == tp.id) {
+            Some((_, comment)) => {
+                ui.add(egui::TextEdit::singleline(comment).desired_width(f32::INFINITY).hint_text("What to change (optional): it goes to the agent"));
+                ui.horizontal(|ui| {
+                    if ui.button("Reject").clicked() {
+                        acts.push(Act::Run("agent.rejectProposal", json!({"topic": tp.id, "comment": comment.trim()})));
+                        done = true;
+                    }
+                    if ui.small_button("Cancel").clicked() {
+                        done = true;
+                    }
+                });
+            }
+            None => {
+                ui.horizontal(|ui| {
+                    let can = prop.state == State::Pending;
+                    if ui
+                        .add_enabled(can, egui::Button::new(format!("Apply option {shown}")))
+                        .on_hover_text("One undo step, recorded as your decision")
+                        .clicked()
+                    {
+                        acts.push(Act::Run("agent.applyProposal", json!({"topic": tp.id, "option": shown})));
+                    }
+                    if ui.button("Reject").clicked() {
+                        st.reject_edit = Some((tp.id.clone(), String::new()));
+                    }
+                });
+            }
+        }
+        if done {
+            st.reject_edit = None;
         }
     });
 }

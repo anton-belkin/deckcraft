@@ -278,6 +278,9 @@ pub struct Topic {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub hidden: bool,
     pub at: u64,
+    /// The agent's proposed changes (options of recorded commands), applied by the person.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub draft: Option<crate::proposals::Proposal>,
 }
 
 fn explanation() -> String {
@@ -332,6 +335,9 @@ pub struct Layer {
     /// last mode used in the app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<crate::context::Context>,
+    /// What happened to proposals, for the agent's event stream (memory only).
+    #[serde(skip)]
+    pub events: Vec<crate::proposals::Event>,
     /// Bumped on every change (not meaningful in the file; lets views cache).
     #[serde(skip)]
     pub revision: u64,
@@ -394,6 +400,13 @@ impl Layer {
         for t in &self.topics {
             scan(&t.status_text);
             scan(&t.proposal);
+            // What a proposal touches, and the links in its options' why.
+            for c in t.draft.iter().flat_map(|d| d.options.iter()) {
+                scan(&c.why);
+                for a in &c.touched {
+                    scan(&format!("(anchor:{a})"));
+                }
+            }
         }
         let used = |id: &str| {
             self.questions.iter().any(|q| q.anchor == id || q.refs.iter().any(|r| r.anchor == id))

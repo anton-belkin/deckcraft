@@ -33,6 +33,11 @@ macro_rules! spec {
 pub static SPECS: &[CommandSpec] = &[
     // the presenter's side
     spec!(change "agent.ask", "Ask the Agent", "{text, slide?, shape?, words?, cell?, topic?, new?: bool, refs?: [{n, slide, shape?}] (what ⟦n⟧ in the text points at), spoken?: bool, transcribing?: bool (spoken, text still coming: not with the agent until agent.spoken)} (default: the selection) — joins the topic the place has, or starts one → {id, topic}", has_slide, crate::topic_cmds::ask),
+    spec!(change "agent.applyProposal", "Apply Proposal", "{topic, option?} — the person applies an option of the agent's proposal: one undo step, a decision note", has_doc, crate::proposals::apply),
+    spec!(change "agent.rejectProposal", "Reject Proposal", "{topic, comment?} — the comment goes to the agent as a follow-up in the topic", has_doc, crate::proposals::reject),
+    spec!(change "agent.describeOption", "Describe Option", "{topic, option, title, why} — the agent names an option of its proposal", has_doc, crate::proposals::describe),
+    spec!(change "agent.discardProposal", "Discard Proposal", "{topic, option?} — the agent takes back an option, or its whole proposal", has_doc, crate::proposals::discard),
+    spec!(query "agent.proposalEvents", "Proposal Events", "{after?: seq} → proposal_applied, proposal_rejected (with the comment), proposal_outdated", has_doc, crate::proposals::events),
     spec!(change "agent.spoken", "Spoken Question Transcribed", "{id, text} — the text is ready: the question goes to the agent; {id, error} — the transcription failed; {id} — transcribing again", has_doc, crate::topic_cmds::spoken),
     spec!(change "agent.removeQuestion", "Dismiss Spoken Question", "{id} — a spoken question still being transcribed, or whose transcription failed", has_doc, crate::topic_cmds::remove_question),
     spec!(change "agent.newTopic", "New Topic", "{slide?, shape?, words?} (default: the selection)", has_slide, crate::topic_cmds::new_topic),
@@ -63,7 +68,7 @@ pub static SPECS: &[CommandSpec] = &[
     spec!(change "agent.decision", "Log Decision", "{text, source?, slide?, shape?, actor?}", has_doc, decision),
     spec!(query "agent.layer", "Agent Layer", "{} → anchors (resolved), questions, notes, client-data marks, history", has_doc, layer_cmd),
     spec!(query "agent.context", "Agent Context", "{masked?} → the deck at a glance: slides with titles, what is on them, client data, open questions, recent decisions", has_doc, context),
-    spec!(query "agent.read", "Agent Read", "{slide?: n|\"all\" (default: current), masked?} → slides: shapes with text, tables, links, notes", has_doc, read),
+    spec!(query "agent.read", "Agent Read", "{slide?: n|\"all\" (default: current), masked?, view?: \"proposal\", topic?, option?} → slides: shapes with text, tables, links, notes; shapes a pending proposal touches carry `pending`; view proposal: as that option would leave them", has_doc, read),
     spec!(edit "agent.exec", "Run Command as Agent", "{command, params?, reason?, source?} — runs a command that changes the deck, logged as the agent's; refused on client data", has_doc, exec),
     // Excel links
     spec!(edit "link.paste", "Paste Linked Cells", "{payload: object|json string | html: clipboard HTML, mode?: table|picture (default table), rect?: [x,y,w,h]}", has_slide, link_paste),
@@ -330,6 +335,28 @@ pub fn question_json(s: &Session, l: &Layer, m: &Masker, q: &Question) -> Json {
         }
         if let Some(t) = l.topic(&q.topic) {
             o["topic"] = json!({"id": t.id, "number": nums.topic(&t.id), "status": t.status.id(), "statusText": m.text(&crate::textlinks::plain(d, l, &nums, &t.status_text))});
+        }
+        // Pending proposals near the question: take them into account, don't contradict them.
+        let ix = Index::of(&d.doc);
+        let mut wheres: Vec<anchor::Place> = l.anchor(&q.anchor).and_then(|a| anchor::resolve(&d.doc, &ix, a)).into_iter().collect();
+        if let Some(t) = l.topic(&q.topic) {
+            for p in crate::topics::live(t) {
+                wheres.extend(crate::topics::resolve(&d.doc, &ix, l, p).into_iter().map(|(_, w)| w));
+            }
+        }
+        let mut near: Vec<Json> = vec![];
+        for w in &wheres {
+            for mut x in crate::proposals::pending_at(d, l, w) {
+                if let Some(sm) = x.get("summary").and_then(Json::as_str) {
+                    x["summary"] = json!(m.text(sm));
+                }
+                if !near.contains(&x) {
+                    near.push(x);
+                }
+            }
+        }
+        if !near.is_empty() {
+            o["pendingNearby"] = json!(near);
         }
         if !q.refs.is_empty() {
             // What the person pointed at while speaking: in the text where they pointed, and listed.
@@ -612,7 +639,31 @@ fn read(s: &mut Session, p: &Json) -> Result<Json> {
         }
         None => vec![d.selection.slide.min(n.saturating_sub(1))],
     };
-    let slides: Vec<Json> = which.into_iter().map(|i| slide_json(s, &l, &m, i)).collect();
+    if str_p(p, "view") == Some("proposal") {
+        let draft = crate::proposals::read_view(s, p)?;
+        let n = draft.doc()?.doc.slides.len();
+        let which: Vec<usize> = match p.get("slide") {
+            Some(Json::String(a)) if a == "all" => (0..n.min(500)).collect(),
+            Some(v) => v.as_u64().filter(|k| *k >= 1 && (*k as usize) <= n).map(|k| vec![k as usize - 1]).unwrap_or_default(),
+            None => vec![d.selection.slide.min(n.saturating_sub(1))],
+        };
+        let slides: Vec<Json> = which.into_iter().map(|i| slide_json(&draft, &l, &m, i)).collect();
+        return Ok(json!({"masked": m.on, "view": "proposal", "slides": slides}));
+    }
+    let mut slides: Vec<Json> = which.iter().map(|&i| slide_json(s, &l, &m, i)).collect();
+    // What pending proposals touch.
+    for (sj, &i) in slides.iter_mut().zip(&which) {
+        if let Some(list) = sj.get_mut("shapes").and_then(Json::as_array_mut) {
+            for sh in list {
+                let Some(id) = sh.get("id").and_then(Json::as_u64).and_then(|v| u32::try_from(v).ok()) else { continue };
+                let w = anchor::Place { slide: i, shape: Some(deckcraft_engine::model::ShapeId(id)), ..Default::default() };
+                let pending = crate::proposals::pending_at(d, &l, &w);
+                if !pending.is_empty() {
+                    sh["pending"] = json!(pending);
+                }
+            }
+        }
+    }
     Ok(json!({"masked": m.on, "slides": slides}))
 }
 
@@ -666,6 +717,10 @@ fn exec(s: &mut Session, p: &Json) -> Result<Json> {
     }
     let reason: String = str_p(p, "reason").unwrap_or("").chars().take(4_000).collect();
     let source: String = str_p(p, "source").unwrap_or("").chars().take(2_000).collect();
+    // In a topic: proposed, not done (it runs on the topic's draft and is recorded).
+    if p.get("topic").is_some() {
+        return crate::proposals::record(s, p, &command, &params, &reason);
+    }
     PENDING_REASON.with(|r| *r.borrow_mut() = Some((reason, source)));
     AGENT_DEPTH.with(|x| x.set(x.get().saturating_add(1)));
     let r = s.execute(&command, &params);

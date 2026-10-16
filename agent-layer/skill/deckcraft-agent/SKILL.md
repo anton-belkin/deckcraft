@@ -104,6 +104,15 @@ Only through `run_command`, with a `reason` and a `source`; it is recorded as yo
 history. Reading commands, files and the clipboard are refused (use `read_slides`). Commands act on
 the selection unless they take `id`/`ids`.
 
+**In a topic, propose; don't edit.** `run_command {…, topic}` doesn't change the deck: it runs on
+the topic's draft and is recorded in its proposal; the person applies it in the document. Don't ask
+for confirmation in the chat. When there's a real choice, offer options (`option: "B"`, then
+`describe_option {topic, option, title, why}`); take one back with `discard_proposal`. Check a draft
+with `read_slides {view: "proposal", topic, option}`. Shapes a pending proposal touches carry
+`pending`, questions carry `pendingNearby`: build on them, don't contradict them. A rejected
+proposal's comment comes back as a question in the topic; an out-of-date one (the deck changed
+under it) needs redoing.
+
 ## Privacy — non-negotiable
 
 Text the user marked as client data shows as pseudonyms like `[client-3]`, in the marked shape and

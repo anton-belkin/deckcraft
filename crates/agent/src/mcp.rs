@@ -20,7 +20,7 @@ decisions (log_decision). Change the deck only with run_command, giving a reason
 from spreadsheet cells: list_links shows their source and whether the numbers there changed since they were pasted. PRIVACY: \
 text the user marked as client data shows as pseudonyms like [client-3] wherever it appears; the same text always gets the \
 same pseudonym. Never present a pseudonym as real, never guess what it stands for, and never write it into the deck as if it \
-were a name. You cannot change shapes holding client data. A question with kind \"ping\" is a connection check: answer it at once with \"here\", don't investigate. Questions belong to topics (list_topics, get_topic): link inside the text ([slide 4](slide:4), [3.2](place:3.2)); add places that a change here affects (add_places); leave notes that will still matter after the chat (add_note with the topic); never mark Agreed, propose it (propose_agreed). VOICE: ⟦n⟧ in a question is what the user pointed at while speaking (expanded as ⟦n: slide 2 › TextBox 3 “Revenue grew 6%”⟧), see refs; resolve \"this\", \"that one\", \"это\" from those and the context.";
+were a name. You cannot change shapes holding client data. A question with kind \"ping\" is a connection check: answer it at once with \"here\", don't investigate. Questions belong to topics (list_topics, get_topic): link inside the text ([slide 4](slide:4), [3.2](place:3.2)); add places that a change here affects (add_places); leave notes that will still matter after the chat (add_note with the topic); never mark Agreed, propose it (propose_agreed). PROPOSALS: in a topic, propose changes with run_command {topic} (they run on the topic's draft; the person applies them in the document); don't ask for confirmation in the chat; offer options (option B, describe_option) when there's a real choice. Shapes a pending proposal touches carry `pending`, questions carry `pendingNearby`: take them into account. VOICE: ⟦n⟧ in a question is what the user pointed at while speaking (expanded as ⟦n: slide 2 › TextBox 3 “Revenue grew 6%”⟧), see refs; resolve \"this\", \"that one\", \"это\" from those and the context.";
 
 fn tool(name: &str, desc: &str, props: Value, required: &[&str], read_only: bool) -> Value {
     json!({
@@ -88,7 +88,7 @@ fn base_tools() -> Vec<Value> {
         tool(
             "read_slides",
             "What is on slides: every shape with its id, kind, box, text, table cells, alt text and link; speaker notes; your notes. Client data shows as pseudonyms (flagged private).",
-            json!({"slide": {"type": ["integer", "string"], "description": "Slide number (1-based) or \"all\"; default: the current slide"}}),
+            json!({"slide": {"type": ["integer", "string"], "description": "Slide number (1-based) or \"all\"; default: the current slide"}, "view": s("\"proposal\": the slides as a topic's proposal would leave them (with topic, option)"), "topic": json!({"type": ["integer", "string"]}), "option": s("The proposal's option (default A)")}),
             &[],
             true,
         ),
@@ -176,12 +176,26 @@ fn base_tools() -> Vec<Value> {
             &["topic", "reasons"],
             false,
         ),
+        tool(
+            "describe_option",
+            "Name an option of your proposal in a topic: a short title and why (with links). Offer options only when there's a real choice.",
+            json!({"topic": json!({"type": ["integer", "string"]}), "option": s("A, B, C…"), "title": s("A few words"), "why": s("Why this option, with links")}),
+            &["topic", "option", "title"],
+            false,
+        ),
+        tool(
+            "discard_proposal",
+            "Take back an option of your proposal in a topic, or the whole proposal (no option).",
+            json!({"topic": json!({"type": ["integer", "string"]}), "option": s("The option; omit for the whole proposal")}),
+            &["topic"],
+            false,
+        ),
         tool("log_decision", "Record a decision in the deck's history (why it is the way it is).", Value::Object(decision_props), &["text"], false),
         tool("get_layer", "The whole agent layer: anchors, questions, notes, client-data marks, history.", json!({}), &[], true),
         tool(
             "run_command",
-            "Change the deck with any DeckCraft command (text.insert, format.bold, shape.insert, slide.new…; see list_commands). Logged as yours with the reason and source. Reading commands, files and the clipboard are refused (use read_slides), and so is anything touching client data.",
-            json!({"command": s("Command id"), "params": {"type": "object"}, "reason": s("Why"), "source": s("What it is based on")}),
+            "Change the deck with any DeckCraft command (text.insert, format.bold, shape.insert, slide.new…; see list_commands). Logged as yours with the reason and source. Reading commands, files and the clipboard are refused (use read_slides), and so is anything touching client data. With `topic` it doesn't change the deck: it runs on the topic's draft and is recorded in the topic's proposal (option A unless you name another); the person applies it in the document.",
+            json!({"command": s("Command id"), "params": {"type": "object"}, "reason": s("Why"), "source": s("What it is based on"), "topic": json!({"type": ["integer", "string"], "description": "Propose instead of changing: the topic (number or id)"}), "option": s("The proposal's option: A (default), B, C…"), "slide": n("With topic: the slide the command acts on (default: the slide of the shape it names, else the current one)")}),
             &["command", "reason"],
             false,
         ),
@@ -242,7 +256,7 @@ pub fn call(b: &mut dyn Backend, name: &str, args: &Value) -> Result<Value, Stri
         "attach" => exec(b, &pick(args, &["document"]), "agent.attach", pick(args, &["label"])),
         "detach" => exec(b, &json!({}), "agent.detach", pick(args, &["listener"])),
         "get_context" => exec(b, &scope, "agent.context", json!({})),
-        "read_slides" => exec(b, &scope, "agent.read", pick(args, &["slide"])),
+        "read_slides" => exec(b, &scope, "agent.read", pick(args, &["slide", "view", "topic", "option"])),
         "list_links" => {
             if args.get("check").and_then(Value::as_bool) == Some(true) {
                 exec(b, &scope, "link.check", json!({}))?;
@@ -276,7 +290,9 @@ pub fn call(b: &mut dyn Backend, name: &str, args: &Value) -> Result<Value, Stri
         "propose_agreed" => exec(b, &scope, "agent.proposeAgreed", pick(args, &["topic", "reasons"])),
         "log_decision" => exec(b, &scope, "agent.decision", pick(args, &["text", "source", "slide", "shape", "words"])),
         "get_layer" => exec(b, &scope, "agent.layer", json!({})),
-        "run_command" => exec(b, &scope, "agent.exec", pick(args, &["command", "params", "reason", "source"])),
+        "run_command" => exec(b, &scope, "agent.exec", pick(args, &["command", "params", "reason", "source", "topic", "option", "slide"])),
+        "describe_option" => exec(b, &scope, "agent.describeOption", pick(args, &["topic", "option", "title", "why"])),
+        "discard_proposal" => exec(b, &scope, "agent.discardProposal", pick(args, &["topic", "option"])),
         "list_commands" => {
             let all = b.call("engine.commands", json!({}))?;
             let q = args.get("search").and_then(Value::as_str).unwrap_or("").to_lowercase();
