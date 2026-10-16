@@ -18,7 +18,7 @@ alive" before changing anything outside the agent crates.
 | --- | --- | --- |
 | `crates/agent/` (`deckcraft-agent`) | The layer: data model and storage in the `.pptx`, anchors, `agent.*` and `link.*` commands, privacy masking, Excel links (`links.rs`, `xlsx.rs`), the in-app MCP server and `/events` | fork only |
 | `crates/agent-ui/` (`deckcraft-agent-ui`) | The **Agent** ribbon tab (`ribbon.rs`), badges on shapes and slides, the Agent pane, the linked-cells hover card, prepared answers in Presenter View, context-menu items, the background link checker; `examples/agent_snapshot.rs` renders it offscreen | fork only |
-| `apps/deckcraft/src/agent.rs` | Starts the layer in the desktop app (`--agent-port`, `--no-agent`), and `--agent-stdio` (the MCP over stdio for Claude Desktop and Cowork, no window) | fork only |
+| `apps/deckcraft/src/agent.rs` | Starts the layer in the desktop app (`--agent-port`, `--no-agent`), and `--agent-stdio [--control HOST:PORT]` (the MCP over stdio for Claude Desktop and Cowork, no window) | fork only |
 | `agent-layer/links.md` | **The Excel → slide link contract** (clipboard payload, staleness, back-references) and the exact list of what GridCraft adds | fork only |
 | `agent-layer/skill/deckcraft-agent/` | The agent's skill | fork only |
 | `agent-layer/rebase.sh` | Rebase onto upstream and run the gates | fork only |
@@ -29,7 +29,7 @@ alive" before changing anything outside the agent crates.
 ### The patch to upstream files
 
 Every edit to a file that exists upstream carries a `fork:agent` comment.
-`git grep -n fork:agent -- ':!crates/agent*' ':!agent-layer'` lists them: 29 lines, all insertions
+`git grep -n fork:agent -- ':!crates/agent*' ':!agent-layer'` lists them: 30 lines, all insertions
 or one-line changes:
 
 - `crates/engine/src/lib.rs`: `pub mod ext;`; in `Session::execute` the observers before and after
@@ -43,7 +43,7 @@ or one-line changes:
 - `crates/ui-egui/src/show.rs`: `ext::presenter_notes` under the speaker notes in Presenter View.
 - `crates/ui-egui/src/ribbon.rs`: extension tabs (`ext::ribbon_tabs`) known and listed after the
   built-in tabs, their content drawn by `ext::ribbon_tab` (5 lines).
-- `apps/deckcraft/src/main.rs` (3 lines), `apps/deckcraft/Cargo.toml` (2): wiring.
+- `apps/deckcraft/src/main.rs` (4 lines: `--agent-stdio` on the first line of `main`), `apps/deckcraft/Cargo.toml` (2): wiring.
 - `Cargo.toml`: the two workspace dependencies.
 - `xtask/src/layers.rs`: the two crates in the layer table (L6) and their order within L6.
 
@@ -79,16 +79,30 @@ upstream. Each one accepted upstream removes its lines from the patch.
   (mark/unmark the selection), *Connection* (the server, whether an agent is connected and who,
   Copy MCP Command, Connect Cowork) and *Links* (out-of-date count, Check Now, Update Stale). The
   pane keeps what is about the content: this slide's questions, prepared answers, notes and linked
-  cells, all questions, link details, the history. The floating status button shows only while the
-  ribbon is collapsed.
-- **Cowork over stdio.** Claude Desktop and Cowork start local MCP servers as processes:
-  `deckcraft --agent-stdio` answers `initialize`/`tools/list` itself (so it starts before the app)
-  and forwards tool calls to the app's server on 7984, saying "DeckCraft isn't open" while it isn't.
-  **Connect Cowork** writes the `deckcraft` entry into Claude Desktop's
-  `claude_desktop_config.json` (backup first, other servers untouched, a broken file never
-  overwritten). Claude Desktop keeps the config in memory and writes it back when it quits, so quit
-  it with ⌘Q and reopen it after connecting. There is no event stream over stdio: the agent listens
-  with `wait_for_questions` in a loop.
+  cells, all questions, link details, the history. Under the big buttons a status line says where
+  each stands (`1 ready` / `2 waiting` / `1 in work` / `idle`; Cowork `connected` / `not set up` /
+  `quit Claude (⌘Q)` / `open Claude` / `other build`; links `up to date` / `1 out of date`). The
+  floating status button shows only while the ribbon is collapsed.
+- **Cowork over stdio** (the contract GridCraft and WordCraft share). Claude Desktop and Cowork
+  start local MCP servers as processes: `deckcraft --agent-stdio [--control 127.0.0.1:7985]` is
+  handled on the first line of `main`, before logging and the window, speaks newline-delimited
+  JSON-RPC on stdin/stdout (nothing else on stdout) and exits when stdin closes. It reaches the
+  running app through its control channel, connecting on the first tool call, so Claude can start
+  before DeckCraft; while DeckCraft is closed, tools say "… not reachable … Is DeckCraft open?" and
+  `initialize`/`tools/list` still work. **Connect Cowork** writes
+  `"deckcraft": {"command": <this executable>, "args": ["--agent-stdio", "--control", "127.0.0.1:<port>"]}`
+  into Claude Desktop's `claude_desktop_config.json`: a backup first (`.bak-deckcraft-<ms>`), only
+  `mcpServers.deckcraft` changed, a file that isn't a JSON object never touched, written through a
+  temp file and a rename. Claude Desktop rewrites that file from memory when it quits, so when it
+  is running DeckCraft waits in the background (`ps -axo comm=`, the main
+  `/Claude.app/Contents/MacOS/Claude` only) and writes 1.5 s after it has quit; the button's status
+  says "quit Claude (⌘Q)", then "open Claude". In tests the config path is never the real one and
+  Claude counts as running. There is no event stream over stdio: the agent listens with
+  `wait_for_questions` in a loop. "Agent active" on the tab comes from the agent's own calls to the
+  layer (any transport) in the last two minutes.
+- **Keytip A** (Alt, A; F10, A on macOS) opens the Agent tab: DeckCraft has no keytip system of its
+  own, so the extension handles the sequence before the app reads the keyboard (the A isn't typed
+  into the slide).
 - **Prepared answers are notes of kind `faq` on a slide** — what the agent expects the audience to
   ask, with the answer. The presenter sees them in the pane and in Presenter View.
 - **The MCP server runs inside the app** (`http://127.0.0.1:7984/mcp`, Streamable HTTP, JSON

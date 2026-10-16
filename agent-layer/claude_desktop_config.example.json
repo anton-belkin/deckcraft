@@ -2,7 +2,7 @@
   "mcpServers": {
     "deckcraft": {
       "command": "/Users/antonbelkin/deckcraft-fork/target/release/deckcraft",
-      "args": ["--agent-stdio"]
+      "args": ["--agent-stdio", "--control", "127.0.0.1:7985"]
     }
   }
 }

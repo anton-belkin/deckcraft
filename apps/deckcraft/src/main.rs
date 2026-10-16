@@ -168,6 +168,7 @@ fn app_icon() -> Option<egui::IconData> {
 }
 
 fn main() -> eframe::Result {
+    agent::stdio_if_asked(); // fork:agent — `--agent-stdio` serves MCP and exits
     // First, so every start-up record (and the engine's panic hook, installed with the first
     // Session) is captured; see `logging`.
     let logger = logging::install();

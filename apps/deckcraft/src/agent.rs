@@ -3,8 +3,9 @@
 //! control channel.
 //!
 //! `--agent-port <port>` (or `DECKCRAFT_AGENT_PORT`) picks the port, `--no-agent` turns it off.
-//! `--agent-stdio` doesn't open a window: it serves the agent layer's MCP over stdin/stdout for
-//! Claude Desktop and Cowork, forwarding to the running app (see `deckcraft_agent::stdio`).
+//! `--agent-stdio [--control HOST:PORT]` doesn't open a window: it serves the agent layer's MCP
+//! over stdin/stdout for Claude Desktop and Cowork, reaching the running app through its control
+//! channel (see `deckcraft_agent::stdio`).
 //! With the agent on, the control channel starts too (on 7985 unless `--control` says otherwise:
 //! GridCraft keeps 7979, which DeckCraft's links ask).
 
@@ -18,18 +19,13 @@ const CONTROL_PORT: u16 = 7985;
 pub fn take_args(args: Vec<String>, control: Option<u16>) -> (Vec<String>, Option<u16>, Option<u16>) {
     let mut port = std::env::var("DECKCRAFT_AGENT_PORT").ok().and_then(|p| p.parse().ok()).or(Some(AGENT_PORT));
     let mut rest = Vec::with_capacity(args.len());
-    let mut stdio = false;
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--agent-port" => port = it.next().and_then(|p| p.parse().ok()),
             "--no-agent" => port = None,
-            "--agent-stdio" => stdio = true,
             _ => rest.push(a),
         }
-    }
-    if stdio {
-        serve_stdio(port.unwrap_or(AGENT_PORT));
     }
     (rest, port, control_port(port, control))
 }
@@ -46,23 +42,39 @@ pub fn start(agent: Option<u16>, control: Option<u16>) {
     let addr = format!("127.0.0.1:{control}");
     deckcraft_agent::links::set_own_control(addr.clone());
     match deckcraft_agent::server::start(port, addr) {
-        Ok(port) => deckcraft_agent_ui::set_server_url(format!("http://127.0.0.1:{port}/mcp")),
+        Ok(port) => {
+            deckcraft_agent_ui::set_server_url(format!("http://127.0.0.1:{port}/mcp"));
+            if let Ok(exe) = std::env::current_exe() {
+                deckcraft_agent_ui::set_stdio_entry(deckcraft_agent::cowork::entry(&exe, control));
+            }
+        }
         Err(e) => log::error!("agent server on port {port}: {e}"),
     }
 }
 
-/// `--agent-stdio`: the agent layer's MCP on stdin/stdout until the client closes it, then exit.
-/// Nothing but protocol goes to stdout (the log goes to stderr).
-fn serve_stdio(port: u16) -> ! {
-    let stdin = std::io::stdin();
-    let code = match deckcraft_agent::stdio::serve(port, stdin.lock(), std::io::stdout()) {
+/// `deckcraft --agent-stdio [--control HOST:PORT]`: serve the agent layer's MCP over stdio (for
+/// Claude Desktop and Cowork), reaching the running app through its control channel, and exit.
+/// Runs first in `main`: nothing else of the app starts (no log, no window), and nothing but
+/// protocol goes to stdout.
+pub fn stdio_if_asked() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if !args.iter().any(|a| a == deckcraft_agent::cowork::STDIO_FLAG) {
+        return;
+    }
+    let port = std::env::var("DECKCRAFT_CONTROL_PORT").ok().and_then(|p| p.parse::<u16>().ok()).unwrap_or(CONTROL_PORT);
+    let mut addr = format!("127.0.0.1:{port}");
+    if let Some(v) = args.iter().position(|a| a == "--control").and_then(|i| args.get(i + 1)) {
+        addr = if v.contains(':') { v.clone() } else { format!("127.0.0.1:{v}") };
+    }
+    let mut backend = deckcraft_agent::stdio::Lazy::new(addr);
+    let code = match deckcraft_agent::stdio::serve(&mut backend, std::io::stdin().lock(), std::io::stdout()) {
         Ok(()) => 0,
         Err(e) => {
-            log::error!("agent stdio: {e}");
+            let _ = std::io::Write::write_fmt(&mut std::io::stderr(), format_args!("deckcraft --agent-stdio: {e}\n"));
             1
         }
     };
-    std::process::exit(code)
+    std::process::exit(code);
 }
 
 #[cfg(test)]
