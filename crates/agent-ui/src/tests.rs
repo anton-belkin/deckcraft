@@ -8,7 +8,12 @@ use serde_json::json;
 
 fn harness(s: Session) -> Harness<'static, SlideApp> {
     crate::install();
-    // Never the user's real Claude Desktop config.
+    // Never a real agent, never the user's real Claude Desktop config.
+    deckcraft_agent::runner::set_config(deckcraft_agent::runner::Config {
+        command: "deckcraft-test-no-agent".into(),
+        data_dir: Some(std::env::temp_dir().join(format!("deckcraft-ui-tests-{}/agent", std::process::id()))),
+        ..Default::default()
+    });
     deckcraft_agent::cowork::set_config_path(Some(
         std::env::temp_dir().join(format!("deckcraft-ui-tests-{}/claude_desktop_config.json", std::process::id())),
     ));
@@ -77,7 +82,7 @@ fn the_agent_tab_marks_the_selection_as_client_data() {
     let set = deckcraft_agent::privacy::private_shapes(&app.session);
     assert!(set.iter().any(|(_, x)| u64::from(x.0) == id), "marked from the ribbon");
     assert_eq!(app.ui.tab, "Agent", "the tab stays known");
-    h.get_by_label("Connect Cowork");
+    h.get_by_label("Check");
     h.get_by_label("Unmark Client Data");
 }
 
@@ -103,4 +108,26 @@ fn keytip_a_opens_the_agent_tab_without_typing_into_the_slide() {
         .map(|t| t.text())
         .unwrap();
     assert_eq!(text, "Hello", "the A finished the keytip, it wasn't typed");
+}
+
+#[test]
+fn check_sends_a_ping_that_is_never_shown_as_a_question() {
+    let mut s = Session::with_new();
+    s.execute("slide.new", &json!({"layout": "blank"})).unwrap();
+    let mut h = harness(s);
+    h.state_mut().ui.tab = "Agent".into();
+    h.run_steps(2);
+    h.get_by_label("Nobody is listening");
+    h.get_by_label("Check").click();
+    h.run_steps(2);
+    let app = h.state();
+    let l = deckcraft_agent::active_layer(&app.session).unwrap();
+    assert_eq!(l.questions.iter().filter(|q| q.is_ping()).count(), 1);
+    assert_eq!(l.asked().count(), 0, "not a question for the presenter");
+    h.get_by_label_contains("Checking");
+    // Copy holds the commands of the mode; Connect Cowork is in it.
+    h.get_by_label("Copy").click();
+    h.run_steps(2);
+    h.get_by_label("Claude Code: add MCP server");
+    h.get_by_label_contains("Connect Cowork");
 }

@@ -44,6 +44,7 @@ pub fn start(port: u16, control: String) -> std::io::Result<u16> {
 static LISTENING: AtomicU32 = AtomicU32::new(0);
 static LAST_CALL: AtomicU64 = AtomicU64::new(0);
 static MONITORS: AtomicUsize = AtomicUsize::new(0);
+static CHANNELS: AtomicUsize = AtomicUsize::new(0);
 static CLIENT: Mutex<String> = Mutex::new(String::new());
 
 /// What the server knows about its agent, for the app's Connection status.
@@ -55,6 +56,8 @@ pub struct Status {
     pub last_call: u64,
     /// Agents watching `/events` right now.
     pub monitors: usize,
+    /// Channel streams (`GET /mcp`) connected right now.
+    pub channels: usize,
     /// The client's name from `initialize` (`claude-code`, `claude-ai`…).
     pub client: String,
 }
@@ -62,7 +65,13 @@ pub struct Status {
 pub fn status() -> Status {
     let port = u16::try_from(LISTENING.load(Ordering::Relaxed)).ok().filter(|p| *p != 0);
     let client = CLIENT.lock().map(|c| c.clone()).unwrap_or_default();
-    Status { port, last_call: LAST_CALL.load(Ordering::Relaxed), monitors: MONITORS.load(Ordering::Relaxed), client }
+    Status {
+        port,
+        last_call: LAST_CALL.load(Ordering::Relaxed),
+        monitors: MONITORS.load(Ordering::Relaxed),
+        channels: CHANNELS.load(Ordering::Relaxed),
+        client,
+    }
 }
 
 fn note_call(msg: &Value) {
@@ -75,19 +84,19 @@ fn note_call(msg: &Value) {
     }
 }
 
-/// Counts an `/events` watcher while it is connected.
-struct Watching;
+/// Counts a stream (`/events` or the channel) while it is connected.
+struct Watching(&'static AtomicUsize);
 
 impl Watching {
-    fn new() -> Self {
-        MONITORS.fetch_add(1, Ordering::Relaxed);
-        Watching
+    fn new(counter: &'static AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::Relaxed);
+        Watching(counter)
     }
 }
 
 impl Drop for Watching {
     fn drop(&mut self) {
-        MONITORS.fetch_sub(1, Ordering::Relaxed);
+        self.0.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -164,7 +173,13 @@ fn serve(stream: TcpStream, control: &str) {
         }
         let result = match (req.method.as_str(), req.path.as_str()) {
             ("POST", "/mcp") => post_mcp(&mut w, &req, control, &mut backend),
-            ("GET", "/mcp") => respond(&mut w, "405 Method Not Allowed", "text/plain", b"POST JSON-RPC messages here"),
+            ("GET", "/mcp") if crate::listener::mode() == crate::listener::Mode::Channel => {
+                channel_stream(w, control);
+                return;
+            }
+            ("GET", "/mcp") => {
+                respond(&mut w, "405 Method Not Allowed", "text/plain", b"POST JSON-RPC messages here (the stream is on in the channel mode)")
+            }
             ("DELETE", "/mcp") => respond(&mut w, "200 OK", "text/plain", b""),
             ("GET", "/events") => {
                 events(w, control);
@@ -180,7 +195,7 @@ fn serve(stream: TcpStream, control: &str) {
     }
 }
 
-const HELP: &str = "DeckCraft agent layer\n\nPOST /mcp     MCP (Streamable HTTP)\nGET  /events  one JSON line per new question (for a background monitor)\nGET  /health  ok\n";
+const HELP: &str = "DeckCraft agent layer\n\nPOST /mcp     MCP (Streamable HTTP)\nGET  /mcp     questions as channel events (SSE, in the channel mode)\nGET  /events  one JSON line per new question (for a background monitor)\nGET  /health  ok\n";
 
 fn backend<'a>(slot: &'a mut Option<Remote>, control: &str) -> Result<&'a mut Remote, String> {
     if slot.is_none() {
@@ -215,13 +230,63 @@ pub(crate) fn handle_any(b: &mut dyn Backend, msg: &Value) -> Option<Value> {
     }
 }
 
+/// The `GET /mcp` stream (channel mode): each new pending question as a channel event. Questions
+/// that waited while the mode was another are sent when the stream opens.
+fn channel_stream(mut w: TcpStream, control: &str) {
+    if w.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n: connected\n\n")
+        .is_err()
+    {
+        return;
+    }
+    let _ = w.flush();
+    let _watching = Watching::new(&CHANNELS);
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut slot: Option<Remote> = None;
+    let mut quiet = 0u32;
+    loop {
+        if crate::listener::mode() != crate::listener::Mode::Channel {
+            return;
+        }
+        if let Ok(b) = backend(&mut slot, control) {
+            match b.call("engine.execute", json!({"command": "agent.questions", "params": {"status": "pending", "actor": "agent", "masked": true}})) {
+                Ok(Value::Array(list)) => {
+                    for q in list {
+                        let Some(id) = q.get("id").and_then(Value::as_str).map(str::to_string) else { continue };
+                        if !seen.insert(id) {
+                            continue;
+                        }
+                        let event = format!("event: message\ndata: {}\n\n", crate::channel::notification(&q));
+                        if w.write_all(event.as_bytes()).and_then(|()| w.flush()).is_err() {
+                            return;
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(_) => slot = None,
+            }
+        }
+        std::thread::sleep(Duration::from_millis(800));
+        if gone(&w) {
+            return;
+        }
+        quiet += 1;
+        // A comment now and then: notices a client that went away.
+        if quiet >= 10 {
+            quiet = 0;
+            if w.write_all(b": ping\n\n").and_then(|()| w.flush()).is_err() {
+                return;
+            }
+        }
+    }
+}
+
 /// Streams new pending questions, one JSON object per line, until the client goes away.
 fn events(mut w: TcpStream, control: &str) {
     if w.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n").is_err() {
         return;
     }
     let _ = w.flush();
-    let _watching = Watching::new();
+    let _watching = Watching::new(&MONITORS);
     let mut seen: HashSet<String> = HashSet::new();
     let mut slot: Option<Remote> = None;
     loop {
@@ -240,6 +305,7 @@ fn events(mut w: TcpStream, control: &str) {
                             "shape": q.pointer("/where/shape"),
                             "place": q.pointer("/where/label"),
                             "question": q.get("text"),
+                            "kind": q.get("kind").cloned().unwrap_or_else(|| json!("question")),
                             "hint": "claim_question, investigate, answer_question",
                         });
                         if writeln!(w, "{line}").and_then(|()| w.flush()).is_err() {
@@ -253,8 +319,24 @@ fn events(mut w: TcpStream, control: &str) {
         }
         std::thread::sleep(Duration::from_millis(800));
         // Notice a client that went away even when nothing is being written.
-        if w.peer_addr().is_err() {
+        if gone(&w) {
             return;
         }
+    }
+}
+
+/// The client closed the connection (a read would return end of file): nothing else is expected
+/// from it on a stream, so any readable state but "would block" means it went away.
+fn gone(s: &TcpStream) -> bool {
+    if s.set_nonblocking(true).is_err() {
+        return true;
+    }
+    let mut b = [0u8; 1];
+    let r = s.peek(&mut b);
+    let _ = s.set_nonblocking(false);
+    match r {
+        Ok(0) => true,
+        Ok(_) => false,
+        Err(e) => e.kind() != std::io::ErrorKind::WouldBlock,
     }
 }

@@ -10,7 +10,7 @@
 //!
 //! Keytip **A** (Alt, A; F10, A on macOS) opens the tab.
 
-use deckcraft_agent::cowork::{self, Configured};
+use deckcraft_agent::cowork::Configured;
 use deckcraft_agent::layer::{self, QuestionStatus};
 use deckcraft_agent::links;
 use deckcraft_ui_egui::SlideApp;
@@ -20,25 +20,20 @@ use deckcraft_ui_egui::widgets::{RIBBON_H, group, rows, small_button};
 use egui::{Align2, Color32, CornerRadius, Response, RichText, Sense, Ui, pos2, vec2};
 use serde_json::{Value as Json, json};
 
-use crate::{AgentUi, Tab, ago, palette, selection_private};
+use crate::{AgentUi, Tab, palette, selection_private};
 
 /// The tab's name.
 pub const TAB: &str = "Agent";
 /// Its keytip.
 pub const KEYTIP: egui::Key = egui::Key::A;
 
-/// Seconds between looks at Claude Desktop's config (and whether Claude runs).
-const COWORK_EVERY: f64 = 4.0;
-/// An agent that called within this long is "active".
-const ACTIVE_MS: u64 = 2 * 60 * 1000;
-
 #[derive(Default)]
 pub(crate) struct State {
     /// What Claude Desktop's config says about us, when last looked.
-    configured: Option<Configured>,
+    pub configured: Option<Configured>,
     /// Claude Desktop runs (only looked at after a connect, to say "open Claude").
-    claude_running: bool,
-    looked_at: Option<f64>,
+    pub claude_running: bool,
+    pub looked_at: Option<f64>,
     /// Keytips: the Alt key went down with nothing else pressed; armed after a lone Alt or F10.
     alt_down: bool,
     alt_used: bool,
@@ -46,7 +41,7 @@ pub(crate) struct State {
     swallow_until: Option<f64>,
 }
 
-static STDIO_ENTRY: std::sync::OnceLock<Json> = std::sync::OnceLock::new();
+pub(crate) static STDIO_ENTRY: std::sync::OnceLock<Json> = std::sync::OnceLock::new();
 
 /// The config entry Connect Cowork writes (this app in stdio mode, with its control port).
 pub fn set_stdio_entry(e: Json) {
@@ -54,7 +49,7 @@ pub fn set_stdio_entry(e: Json) {
 }
 
 /// A large ribbon button with a status line under its label, coloured.
-fn status_button(ui: &mut Ui, icon: Icon, label: &str, sub: Option<(&str, Color32)>, enabled: bool, selected: bool) -> Response {
+pub(crate) fn status_button(ui: &mut Ui, icon: Icon, label: &str, sub: Option<(&str, Color32)>, enabled: bool, selected: bool) -> Response {
     let t = Tokens::get(ui.ctx());
     let font = theme::font(11.0);
     let sub_font = theme::font(10.0);
@@ -93,18 +88,6 @@ fn status_button(ui: &mut Ui, icon: Icon, label: &str, sub: Option<(&str, Color3
     let name = label.replace('\n', " ");
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, &name));
     resp
-}
-
-/// A status line with a coloured dot, 19 px high.
-fn status_line(ui: &mut Ui, color: Color32, text: &str, tip: &str) -> Response {
-    ui.horizontal(|ui| {
-        ui.set_height(19.0);
-        let (r, _) = ui.allocate_exact_size(vec2(10.0, 19.0), Sense::hover());
-        ui.painter().circle_filled(r.center(), 3.5, color);
-        ui.add(egui::Label::new(RichText::new(text).size(11.5)).selectable(false).sense(Sense::click()))
-    })
-    .inner
-    .on_hover_text(tip)
 }
 
 /// Alt, A (F10, A on macOS) opens the Agent tab. Runs before the app reads the keyboard, so the A
@@ -189,9 +172,9 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui) {
     let p = palette(&t);
     let Some(d) = app.session.active() else { return };
     let l = layer::get(d);
-    let ready = l.questions.iter().filter(|q| q.status == QuestionStatus::Answered && !q.seen).count();
-    let waiting = l.questions.iter().filter(|q| q.status == QuestionStatus::Pending).count();
-    let working = l.questions.iter().filter(|q| q.status == QuestionStatus::Working).count();
+    let ready = l.asked().filter(|q| q.status == QuestionStatus::Answered && !q.seen).count();
+    let waiting = l.asked().filter(|q| q.status == QuestionStatus::Pending).count();
+    let working = l.asked().filter(|q| q.status == QuestionStatus::Working).count();
     let all_links = links::all(&d.doc);
     let checks: Vec<Option<links::Check>> = all_links.iter().map(|(_, _, k)| links::last_check(&k.id)).collect();
     let stale: Vec<u32> = all_links
@@ -244,89 +227,8 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui) {
         });
     });
 
-    // Connection: Cowork, the server, the agent, Claude Code.
-    let now = ui.input(|i| i.time);
-    let entry = STDIO_ENTRY.get().cloned();
-    let state = cowork::state();
-    if st.ribbon.looked_at.is_none_or(|at| now - at > COWORK_EVERY) {
-        st.ribbon.looked_at = Some(now);
-        st.ribbon.configured = match (&entry, cowork::config_path()) {
-            (Some(e), Some(path)) => Some(cowork::configured(&path, e)),
-            _ => None,
-        };
-        st.ribbon.claude_running = matches!(state, cowork::State::Done { .. }) && cowork::claude_running();
-    }
-    group(ui, |ui| {
-        let (sub, color, tip): (&str, Color32, String) = match (&state, &st.ribbon.configured) {
-            (cowork::State::Waiting, _) => {
-                ("quit Claude (⌘Q)", p.pending, "Quit Claude Desktop with ⌘Q: DeckCraft adds itself as soon as Claude has quit".into())
-            }
-            (cowork::State::Failed(e), _) => ("failed", p.broken, e.clone()),
-            (cowork::State::Done { .. }, _) if !st.ribbon.claude_running => {
-                ("open Claude", p.pending, "Added: open Claude Desktop, it loads DeckCraft when it starts".into())
-            }
-            (_, Some(Configured::Yes)) => ("connected", p.answered, "DeckCraft is in Claude Desktop's local MCP servers".into()),
-            (_, Some(Configured::Different)) => {
-                ("other build", p.pending, "Claude Desktop starts another DeckCraft: Connect Cowork points it at this one".into())
-            }
-            _ => (
-                "not set up",
-                t.text_faint,
-                "Adds DeckCraft to Claude Desktop's local MCP servers (other servers are kept; the file is backed up)".into(),
-            ),
-        };
-        let can = entry.is_some() && !matches!(state, cowork::State::Waiting);
-        if status_button(ui, Icon::Link, "Connect\nCowork", Some((sub, color)), can, st.ribbon.configured == Some(Configured::Yes))
-            .on_hover_text(tip)
-            .clicked()
-            && let Some(e) = entry.clone()
-        {
-            cowork::connect(e);
-            st.ribbon.looked_at = None;
-            match cowork::state() {
-                cowork::State::Waiting => {
-                    app.set_status("Quit Claude with ⌘Q: DeckCraft adds itself to Claude's config as soon as Claude has quit, then open Claude again")
-                }
-                cowork::State::Done { .. } => app.set_status("Added DeckCraft to Claude Desktop: open Claude, it loads DeckCraft when it starts"),
-                cowork::State::Failed(e) => app.set_status(format!("Couldn't connect Cowork: {e}")),
-                cowork::State::Idle => {}
-            }
-        }
-        let status = deckcraft_agent::server::status();
-        let url = crate::server_url().map(str::to_string).or_else(|| status.port.map(|p| format!("http://127.0.0.1:{p}/mcp")));
-        rows(ui, |ui| {
-            match &url {
-                Some(u) => {
-                    let host = u.trim_start_matches("http://").trim_end_matches("/mcp");
-                    status_line(
-                        ui,
-                        p.answered,
-                        &format!("Listening · {host}"),
-                        "The agent server inside DeckCraft (MCP over HTTP; /events for a background monitor)",
-                    )
-                }
-                None => status_line(ui, p.broken, "Not listening", "Start DeckCraft without --no-agent"),
-            };
-            let last = deckcraft_agent::last_agent_call().max(status.last_call);
-            let fresh = last > 0 && deckcraft_agent::now_ms().saturating_sub(last) < ACTIVE_MS;
-            if status.monitors > 0 {
-                status_line(ui, p.agent, "Agent watching · /events", "An agent follows the question stream");
-            } else if fresh {
-                status_line(ui, p.agent, &format!("Agent active · {}", ago(last)), "The agent called the layer in the last 2 minutes");
-            } else if last > 0 {
-                status_line(ui, t.text_faint, &format!("Agent last seen · {}", ago(last)), "No call from the agent for a while");
-            } else {
-                status_line(ui, t.text_faint, "No agent yet", "Connect Cowork, or add DeckCraft to Claude Code");
-            }
-            let cmd = url.as_ref().map(|u| format!("claude mcp add --transport http deckcraft {u}"));
-            if small_button(ui, Icon::Copy, "Copy Claude Code command", cmd.is_some(), false).on_hover_text(cmd.clone().unwrap_or_default()).clicked()
-                && let Some(c) = cmd
-            {
-                ui.ctx().copy_text(c);
-                app.set_status("Copied: paste it in a terminal to connect Claude Code");
-            }
-        });
-    });
+    // Connection: is anyone listening, the mode, what to copy.
+    crate::connection::group(st, app, ui);
 
     // Links: the deck's links to spreadsheet cells.
     group(ui, |ui| {

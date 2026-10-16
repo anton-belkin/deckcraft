@@ -20,14 +20,19 @@
 #![forbid(unsafe_code)]
 
 pub mod anchor;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod channel;
 pub mod commands;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cowork;
 pub mod layer;
 pub mod links;
+pub mod listener;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mcp;
 pub mod privacy;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod runner;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod server;
 #[cfg(not(target_arch = "wasm32"))]
@@ -65,6 +70,8 @@ pub fn install() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         deckcraft_engine::ext::register_commands(commands::SPECS);
+        #[cfg(not(target_arch = "wasm32"))]
+        deckcraft_engine::ext::register_commands(runner::SPECS);
         deckcraft_engine::ext::register_observer(&KEEPER);
     });
 }
@@ -89,6 +96,11 @@ pub fn set_paste_as_picture(on: bool) {
 
 pub fn paste_as_picture() -> bool {
     PASTE_PICTURE.load(Ordering::Relaxed)
+}
+
+/// In mode Off, a call from the agent is refused.
+pub(crate) fn refused_when_off(mode: listener::Mode, params: &Json) -> bool {
+    mode == listener::Mode::Off && params.get("actor").and_then(Json::as_str) == Some("agent")
 }
 
 struct Keeper;
@@ -131,6 +143,9 @@ impl Observer for Keeper {
     fn before(&self, s: &mut Session, id: &str, params: &Json) {
         if (id.starts_with("agent.") || id.starts_with("link.")) && params.get("actor").and_then(Json::as_str) == Some("agent") {
             LAST_AGENT_CALL.store(now_ms(), Ordering::Relaxed);
+            if id == "agent.questions" && params.get("waiting").and_then(Json::as_bool) == Some(true) {
+                listener::note_wait();
+            }
         }
         RUNNING.with(|b| b.borrow_mut().push((id.to_string(), doc_ptr(s))));
         // Write the layer into the presentation just before it is saved.
@@ -149,6 +164,10 @@ impl Observer for Keeper {
     }
 
     fn intercept(&self, s: &mut Session, id: &str, params: &Json) -> Option<Result<Json>> {
+        // Mode Off: the agent's calls are refused (the person's still work).
+        if refused_when_off(listener::mode(), params) {
+            return Some(Err(bad(id, "the agent is switched off in DeckCraft (Agent ▸ Connection ▸ Mode)")));
+        }
         if id != "edit.paste" {
             return None;
         }

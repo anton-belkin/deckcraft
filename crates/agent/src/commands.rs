@@ -36,6 +36,8 @@ pub static SPECS: &[CommandSpec] = &[
     spec!(change "agent.seen", "Mark Answer Read", "{id}", has_doc, seen),
     spec!(change "agent.private", "Mark as Client Data", "{slide?, shape?|id?, words?, on?: bool (default true)} — the agent sees pseudonyms there and can't change it", has_slide, private),
     spec!(change "agent.removeNote", "Remove Agent Note", "{id}", has_doc, remove_note),
+    spec!(query "agent.connection", "Agent Connection", "{} → mode, status (answering|checking|noAnswer|listener|nobody|off), the passive signs, the last check", has_doc, connection),
+    spec!(change "agent.ping", "Check the Agent", "{} — asks the agent \"Is anyone there?\" (a connection check, never shown or saved) → {id}", has_doc, ping),
     // the agent's side
     spec!(query "agent.questions", "Agent Questions", "{status?: pending|working|answered|open|all (default all)} → questions with where they are", has_doc, questions),
     spec!(change "agent.claim", "Take Question", "{id} — marks it as being worked on", has_doc, claim),
@@ -230,6 +232,7 @@ fn ask(s: &mut Session, p: &Json) -> Result<Json> {
             asked_at: now_ms(),
             answer: None,
             seen: false,
+            kind: String::new(),
         });
         id
     });
@@ -309,7 +312,12 @@ fn status_matches(q: &Question, want: &str) -> bool {
 pub fn question_json(s: &Session, l: &Layer, m: &Masker, q: &Question) -> Json {
     let mut o = serde_json::to_value(q).unwrap_or(Json::Null);
     o["text"] = json!(m.text(&q.text));
-    o["where"] = where_json(s, l, m, &q.anchor);
+    if q.is_ping() {
+        o["where"] = Json::Null;
+        o["hint"] = json!("a connection check: answer it at once with \"here\" (answer_question), don't investigate");
+    } else {
+        o["where"] = where_json(s, l, m, &q.anchor);
+    }
     o
 }
 
@@ -341,6 +349,13 @@ fn answer(s: &mut Session, p: &Json) -> Result<Json> {
     let id = text_p(p, "id", "agent.answer")?;
     let text = text_p(p, "text", "agent.answer")?;
     let links = links_p(p);
+    let ping = layer::get(s.doc()?).questions.iter().any(|q| q.id == id && q.is_ping());
+    if ping {
+        // A connection check: noted, and gone (it was never a question for the presenter).
+        crate::listener::answered(&id);
+        layer::update(s.doc()?, |l| l.questions.retain(|q| q.id != id));
+        return Ok(json!({"id": id, "ping": true}));
+    }
     let ok = layer::update(s.doc()?, |l| {
         let Some(q) = l.questions.iter_mut().find(|q| q.id == id) else { return false };
         q.status = QuestionStatus::Answered;
@@ -549,7 +564,7 @@ fn context(s: &mut Session, p: &Json) -> Result<Json> {
         "slides": slides,
         "clientData": private,
         "privacyNote": "Text marked as client data shows as pseudonyms like [client-3] wherever it appears in the deck; the same text always gets the same pseudonym. Never present a pseudonym as a real name or number, never guess what it stands for, and don't change shapes marked private (your changes there are refused).",
-        "openQuestions": l.questions.iter().filter(|q| q.status != QuestionStatus::Answered).count(),
+        "openQuestions": l.asked().filter(|q| q.status != QuestionStatus::Answered).count(),
         "notes": l.notes.len(),
         "log": l.log.iter().rev().take(20).map(|e| json!({"seq": e.seq, "actor": e.actor, "kind": e.kind, "text": m.text(&e.text), "source": e.source})).collect::<Vec<_>>(),
     }))
@@ -782,4 +797,52 @@ fn link_goto(s: &mut Session, p: &Json) -> Result<Json> {
         sel.cells = None;
     })?;
     Ok(json!({"slide": slide + 1, "shape": id.0}))
+}
+
+// ---------------------------------------------------------------- the connection check
+
+fn ping(s: &mut Session, p: &Json) -> Result<Json> {
+    if actor_p(p, Actor::Human) == Actor::Agent {
+        return Err(bad("agent.ping", "the person checks the agent, not the other way round"));
+    }
+    let d = s.doc()?;
+    let uid = d.uid;
+    let id = layer::update(d, |l| {
+        l.questions.retain(|q| !q.is_ping());
+        let id = l.fresh_id("ping");
+        l.questions.push(Question {
+            id: id.clone(),
+            anchor: String::new(),
+            text: crate::listener::PING_TEXT.into(),
+            status: QuestionStatus::Pending,
+            asked_at: now_ms(),
+            answer: None,
+            seen: false,
+            kind: "ping".into(),
+        });
+        id
+    });
+    crate::listener::set_ping(Some(crate::listener::Ping { id: id.clone(), uid, sent_at: now_ms(), answered_at: None }));
+    Ok(json!({"id": id}))
+}
+
+fn connection(s: &mut Session, _p: &Json) -> Result<Json> {
+    use crate::listener::{self, Health, Mode};
+    let uid = s.doc()?.uid;
+    let mode = listener::mode();
+    let sig = listener::signals(Some(uid));
+    let (status, extra) = match listener::health(Some(uid)) {
+        _ if mode == Mode::Off => ("off", json!({})),
+        Health::Answering { at, secs } => ("answering", json!({"answeredAt": at, "answeredInSeconds": secs})),
+        Health::Checking { since } => ("checking", json!({"sentAt": since})),
+        Health::NoAnswer { since } => ("noAnswer", json!({"sentAt": since})),
+        Health::Listener(_) => ("listener", json!({})),
+        Health::Nobody(_) => ("nobody", json!({})),
+    };
+    Ok(json!({
+        "mode": mode.id(),
+        "status": status,
+        "check": extra,
+        "signals": {"events": sig.events, "channel": sig.channel, "waiting": sig.waiting, "background": sig.background, "lastCall": sig.last_call, "described": sig.describe()},
+    }))
 }

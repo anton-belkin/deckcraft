@@ -7,6 +7,7 @@
 //! protocol goes to stdout. Same contract as GridCraft and WordCraft.
 
 use std::io::{BufRead, Write};
+use std::sync::{Arc, Mutex};
 
 use deckcraft_mcp::{Backend, Remote};
 use serde_json::{Value, json};
@@ -63,8 +64,9 @@ pub fn handle(b: &mut dyn Backend, msg: &Value) -> Option<Value> {
     Some(reply)
 }
 
-/// Serves newline-delimited JSON-RPC from `input` until it closes.
-pub fn serve(b: &mut dyn Backend, input: impl BufRead, mut output: impl Write) -> std::io::Result<()> {
+/// Serves newline-delimited JSON-RPC from `input` until it closes; replies and anything else
+/// written through `output` (channel events) never interleave.
+pub fn serve(b: &mut dyn Backend, input: impl BufRead, output: Arc<Mutex<dyn Write + Send>>) -> std::io::Result<()> {
     for line in input.lines() {
         let line = line?;
         if line.trim().is_empty() {
@@ -79,9 +81,30 @@ pub fn serve(b: &mut dyn Backend, input: impl BufRead, mut output: impl Write) -
             Err(_) => Some(json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "parse error"}})),
         };
         if let Some(v) = reply {
-            writeln!(output, "{v}")?;
-            output.flush()?;
+            let mut w = match output.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            writeln!(w, "{v}")?;
+            w.flush()?;
         }
     }
     Ok(())
+}
+
+/// `--agent-stdio`: serve on stdin/stdout until stdin closes. `control` is the app's control
+/// channel, `agent_port` its HTTP server (whose channel stream, in the channel mode, is passed on
+/// as `notifications/claude/channel`). Returns the exit code.
+pub fn run(control: &str, agent_port: u16) -> i32 {
+    let out: Arc<Mutex<dyn Write + Send>> = Arc::new(Mutex::new(std::io::stdout()));
+    let follower = out.clone();
+    let _ = std::thread::Builder::new().name("channel-follow".into()).spawn(move || crate::channel::follow(agent_port, follower));
+    let mut b = Lazy::new(control.to_string());
+    match serve(&mut b, std::io::stdin().lock(), out) {
+        Ok(()) => 0,
+        Err(e) => {
+            let _ = writeln!(std::io::stderr(), "deckcraft --agent-stdio: {e}");
+            1
+        }
+    }
 }

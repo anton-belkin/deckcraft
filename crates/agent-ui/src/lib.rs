@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 mod checker;
+mod connection;
 mod overlay;
 mod pane;
 mod ribbon;
@@ -37,6 +38,22 @@ pub fn install() {
 }
 
 pub use ribbon::set_stdio_entry;
+
+static MODE_FILE: OnceLock<std::path::PathBuf> = OnceLock::new();
+
+/// Where the Agent tab remembers the mode the person chose.
+pub fn set_mode_file(p: std::path::PathBuf) {
+    let _ = MODE_FILE.set(p);
+}
+
+pub(crate) fn remember_mode(m: deckcraft_agent::listener::Mode) {
+    if let Some(f) = MODE_FILE.get() {
+        if let Some(d) = f.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let _ = std::fs::write(f, m.id());
+    }
+}
 
 /// Tells the Agent tab where the agent server listens.
 pub fn set_server_url(url: String) {
@@ -221,6 +238,8 @@ impl UiExtension for AgentUi {
             let _ = layer::get(d);
         }
         ribbon::keytip(self, app, ctx);
+        // The background agent (in that mode): started with the first question, fed each new one.
+        deckcraft_agent::runner::tick(&mut app.session);
         self.checker.tick(app, ctx);
         // The Agent tab shows the status; the floating button only while the ribbon is collapsed.
         if app.show.is_none() && app.backstage.is_none() && app.ui.ribbon_collapsed {
@@ -320,8 +339,8 @@ impl AgentUi {
         let Some(canvas) = app.canvas_rect else { return };
         let Some(d) = app.session.active() else { return };
         let l = layer::get(d);
-        let ready = l.questions.iter().filter(|q| q.status == QuestionStatus::Answered && !q.seen).count();
-        let waiting = l.questions.iter().filter(|q| q.status != QuestionStatus::Answered).count();
+        let ready = l.asked().filter(|q| q.status == QuestionStatus::Answered && !q.seen).count();
+        let waiting = l.asked().filter(|q| q.status != QuestionStatus::Answered).count();
         let stale = links::all(&d.doc)
             .iter()
             .filter(|(_, _, k)| {

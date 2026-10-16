@@ -43,8 +43,8 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui) {
             });
             let Some(d) = app.session.active() else { return };
             let l = layer::get(d);
-            let ready = l.questions.iter().filter(|q| q.status == QuestionStatus::Answered && !q.seen).count();
-            let open_q = l.questions.iter().filter(|q| q.status != QuestionStatus::Answered).count();
+            let ready = l.asked().filter(|q| q.status == QuestionStatus::Answered && !q.seen).count();
+            let open_q = l.asked().filter(|q| q.status != QuestionStatus::Answered).count();
             let stale =
                 links::all(&d.doc).iter().filter(|(_, _, k)| links::last_check(&k.id).is_some_and(|c| c.state != links::State::Current)).count();
             ui.horizontal_wrapped(|ui| {
@@ -257,7 +257,7 @@ fn slide_tab(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui, l: &Layer, t: &T
         note_card(ui, n, t, p, acts, st.highlight_note.as_deref() == Some(n.id.as_str()));
     }
     // Questions on this slide.
-    let qs: Vec<&Question> = l.questions.iter().filter(|q| here(&q.anchor).is_some()).collect();
+    let qs: Vec<&Question> = l.asked().filter(|q| here(&q.anchor).is_some()).collect();
     if !qs.is_empty() {
         heading(ui, t, "Questions");
         for q in qs.iter().rev() {
@@ -310,7 +310,7 @@ fn selection_label(app: &SlideApp) -> String {
 }
 
 fn questions_tab(app: &SlideApp, ui: &mut Ui, l: &Layer, t: &Tokens, p: &Palette, acts: &mut Vec<Act>) {
-    if l.questions.is_empty() {
+    if l.asked().next().is_none() {
         ui.label(
             RichText::new(
                 "No questions yet. Select a shape, words or a number and ask the agent about it; the answer comes back here and on the slide.",
@@ -318,7 +318,7 @@ fn questions_tab(app: &SlideApp, ui: &mut Ui, l: &Layer, t: &Tokens, p: &Palette
             .color(t.text_faint),
         );
     }
-    for q in l.questions.iter().rev() {
+    for q in l.asked().collect::<Vec<_>>().into_iter().rev() {
         question_card(app, ui, l, q, t, p, acts, true);
     }
 }

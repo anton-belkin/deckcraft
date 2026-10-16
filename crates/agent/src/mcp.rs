@@ -20,7 +20,7 @@ decisions (log_decision). Change the deck only with run_command, giving a reason
 from spreadsheet cells: list_links shows their source and whether the numbers there changed since they were pasted. PRIVACY: \
 text the user marked as client data shows as pseudonyms like [client-3] wherever it appears; the same text always gets the \
 same pseudonym. Never present a pseudonym as real, never guess what it stands for, and never write it into the deck as if it \
-were a name. You cannot change shapes holding client data.";
+were a name. You cannot change shapes holding client data. A question with kind \"ping\" is a connection check: answer it at once with \"here\", don't investigate.";
 
 fn tool(name: &str, desc: &str, props: Value, required: &[&str], read_only: bool) -> Value {
     json!({
@@ -167,7 +167,8 @@ pub fn call(b: &mut dyn Backend, name: &str, args: &Value) -> Result<Value, Stri
             let secs = args.get("timeout_seconds").and_then(Value::as_f64).filter(|v| v.is_finite()).unwrap_or(25.0).clamp(0.0, 50.0);
             let mut polls = (secs * 2.0) as u32;
             loop {
-                let v = exec(b, "agent.questions", json!({"status": "pending"}))?;
+                // `waiting` tells the app an agent is listening (its Connection status).
+                let v = exec(b, "agent.questions", json!({"status": "pending", "waiting": true}))?;
                 if v.as_array().is_some_and(|a| !a.is_empty()) || polls == 0 {
                     return Ok(v);
                 }
@@ -221,7 +222,7 @@ pub fn handle(b: &mut dyn Backend, msg: &Value) -> Option<Value> {
             let version = if SUPPORTED.contains(&asked) { asked } else { PROTOCOL_VERSION };
             ok(json!({
                 "protocolVersion": version,
-                "capabilities": {"tools": {"listChanged": false}},
+                "capabilities": {"tools": {"listChanged": false}, "experimental": {"claude/channel": {}}},
                 "serverInfo": {"name": "deckcraft-agent", "title": "DeckCraft agent layer", "version": env!("CARGO_PKG_VERSION")},
                 "instructions": INSTRUCTIONS,
             }))

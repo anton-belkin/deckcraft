@@ -108,6 +108,16 @@ pub struct Question {
     /// The presenter has opened the answer.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub seen: bool,
+    /// `ping` for a connection check (never shown, never saved); empty for a person's question.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kind: String,
+}
+
+impl Question {
+    /// A connection check, not a person's question.
+    pub fn is_ping(&self) -> bool {
+        self.kind == "ping"
+    }
 }
 
 /// A note on a slide or a shape: a prepared answer to a question the audience is likely to ask
@@ -172,6 +182,9 @@ pub struct Layer {
     /// Pseudonym numbers, by a hash of the text they stand for (the text itself isn't stored).
     pub pseudonyms: Vec<(String, u32)>,
     pub log: Vec<LogEntry>,
+    /// The background agent's session id (`claude --resume`), so reopening the deck continues it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub agent_session: String,
     /// Bumped on every change (not meaningful in the file; lets views cache).
     #[serde(skip)]
     pub revision: u64,
@@ -197,7 +210,12 @@ impl Layer {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.anchors.is_empty() && self.log.is_empty() && self.questions.is_empty() && self.notes.is_empty()
+        self.anchors.is_empty() && self.log.is_empty() && self.questions.iter().all(Question::is_ping) && self.notes.is_empty()
+    }
+
+    /// The people's questions (connection checks left out).
+    pub fn asked(&self) -> impl Iterator<Item = &Question> {
+        self.questions.iter().filter(|q| !q.is_ping())
     }
 
     /// Anchors nothing refers to any more.
@@ -295,10 +313,13 @@ pub fn is_ours(k: &KeptPart) -> bool {
 /// removes the part.
 pub fn write_into(doc: &mut Presentation, layer: &Layer) {
     doc.kept_parts.retain(|k| !is_ours(k));
-    if layer.is_empty() {
+    // Connection checks never go into the file.
+    let mut layer = layer.clone();
+    layer.questions.retain(|q| !q.is_ping());
+    if layer.is_empty() && layer.agent_session.is_empty() {
         return;
     }
-    let json = serde_json::to_string(layer).unwrap_or_default();
+    let json = serde_json::to_string(&layer).unwrap_or_default();
     // CDATA can't hold `]]>`; JSON only has it inside strings, where `]` means the same.
     let json = json.replace("]]>", "\\u005d\\u005d>");
     let xml = format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<agentLayer xmlns=\"{NS}\"><![CDATA[{json}]]></agentLayer>");
