@@ -60,6 +60,8 @@ pub const TABLE: &[(&str, Class)] = &[
     ("engine", Class::Layer(5)),
     ("ui-egui", Class::Layer(6)),
     ("mcp", Class::Layer(6)),
+    ("agent", Class::Layer(6)),    // fork:agent — the agent layer (beside MCP)
+    ("agent-ui", Class::Layer(6)), // fork:agent — its UI (beside ui-egui)
     ("testkit", Class::Testkit),
     // L7 apps and tooling
     ("deckcraft", Class::Exempt),
@@ -73,7 +75,7 @@ pub const TABLE: &[(&str, Class)] = &[
 pub const DEV_EXCEPTIONS: &[(&str, &str)] = &[("pptx", "engine")];
 
 /// Explicit orderings *within* a layer (earlier may be used by later).
-pub const INTRA_LAYER_ORDER: &[&[&str]] = &[];
+pub const INTRA_LAYER_ORDER: &[&[&str]] = &[&["mcp", "agent", "agent-ui"], &["ui-egui", "agent-ui"]]; // fork:agent
 
 fn intra_layer_allowed(from: &str, to: &str) -> bool {
     let (from, to) = (short_name(from), short_name(to));

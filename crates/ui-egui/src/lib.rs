@@ -13,6 +13,7 @@ pub mod control;
 pub mod credits;
 pub mod dialogs;
 pub mod doc_window;
+pub mod ext; // fork:agent — UI extension points
 pub mod eyedropper;
 pub mod fillui;
 pub mod icons;
@@ -1781,6 +1782,7 @@ impl SlideApp {
         let t = theme::Tokens::get(&ctx);
         self.tick_media(&ctx);
         eyedropper::tick(self, &ctx);
+        ext::frame(self, &ctx); // fork:agent
         self.opening_ui(&ctx);
         if self.show.is_some() {
             self.anim_preview = None;
@@ -1817,6 +1819,7 @@ impl SlideApp {
                     if self.ui.pane.is_some() {
                         panes::show(self, ui);
                     }
+                    ext::side_panels(self, ui); // fork:agent
                     if self.ui.view == ViewMode::Outline {
                         sorter::outline_pane(self, ui);
                     } else {

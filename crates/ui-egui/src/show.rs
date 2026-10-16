@@ -1861,6 +1861,7 @@ fn presenter_window(ctx: &egui::Context, show: &mut Show, doc: &Presentation, no
                     ui.label(
                         egui::RichText::new(if notes.is_empty() { "No notes." } else { &notes }).size(show.notes_px).color(Color32::from_gray(230)),
                     );
+                    crate::ext::presenter_notes(ui, doc, cur); // fork:agent
                 });
             });
             if ui.input(|i| i.viewport().close_requested()) {

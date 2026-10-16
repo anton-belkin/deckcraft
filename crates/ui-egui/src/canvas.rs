@@ -261,6 +261,7 @@ pub fn show(app: &mut SlideApp, ui: &mut Ui) {
     pointer(app, ui, &resp, xf);
     if !app.anim_preview_active() {
         overlays(app, ui, &painter, xf, &t);
+        crate::ext::paint_slide(app, ui, &painter, xf, slide_rect, avail); // fork:agent
         ime_output(app, ui, xf);
         media_bar(app, ui, xf);
         gif_buttons(app, ui, xf, &gifs);
@@ -1308,6 +1309,7 @@ fn context_menu(app: &mut SlideApp, resp: &egui::Response) {
                 ui.close();
             }
         }
+        crate::ext::context_menu(app, ui); // fork:agent
     });
 }
 
