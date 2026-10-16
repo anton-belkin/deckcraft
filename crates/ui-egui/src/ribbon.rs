@@ -157,7 +157,9 @@ const TABS: [&str; 10] = ["Home", "Insert", "Draw", "Design", "Transitions", "An
 pub fn show(app: &mut SlideApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let ctx_tabs = contextual(app);
-    if !TABS.contains(&app.ui.tab.as_str()) && !ctx_tabs.contains(&app.ui.tab.as_str()) {
+    let ext_tabs = crate::ext::ribbon_tabs(app); // fork:agent
+    if !TABS.contains(&app.ui.tab.as_str()) && !ctx_tabs.contains(&app.ui.tab.as_str()) && !ext_tabs.contains(&app.ui.tab) {
+        // fork:agent
         app.ui.tab = "Home".into();
     }
     let h = 28.0 + if app.ui.ribbon_collapsed { 4.0 } else { RIBBON_H + 20.0 };
@@ -181,7 +183,8 @@ pub fn show(app: &mut SlideApp, ui: &mut Ui) {
             }
             x += w + 2.0;
         }
-        let all: Vec<(&str, bool)> = TABS.iter().map(|s| (*s, false)).chain(ctx_tabs.iter().map(|s| (*s, true))).collect();
+        let mut all: Vec<(&str, bool)> = TABS.iter().map(|s| (*s, false)).chain(ctx_tabs.iter().map(|s| (*s, true))).collect(); // fork:agent
+        all.splice(TABS.len()..TABS.len(), ext_tabs.iter().map(|s| (s.as_str(), false))); // fork:agent
         for (name, contextual) in all {
             let font = theme::font(13.0);
             let w = ui.fonts_mut(|f| f.layout_no_wrap(name.to_string(), font.clone(), t.text).size().x) + 18.0;
@@ -245,7 +248,7 @@ pub fn show(app: &mut SlideApp, ui: &mut Ui) {
             "Slide Master" => slide_master(app, ui),
             "Handout Master" => handout_master(app, ui),
             "Notes Master" => notes_master(app, ui),
-            _ => {}
+            _ => crate::ext::ribbon_tab(app, ui, &tab), // fork:agent
         }
     });
 }

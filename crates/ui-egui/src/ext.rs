@@ -1,4 +1,4 @@
-//! UI extension points: panels, slide overlays, context-menu items and presenter-view sections
+//! UI extension points: panels, ribbon tabs, slide overlays, context-menu items and presenter-view sections
 //! contributed by crates an app links in (the UI knows nothing about them). Register with
 //! [`register`] before the first frame.
 //!
@@ -49,6 +49,13 @@ pub trait UiExtension {
     }
     /// A section under the speaker notes in Presenter View.
     fn presenter_notes(&mut self, _ui: &mut Ui, _doc: &Presentation, _slide: usize) {}
+    /// Ribbon tabs this extension adds (after the built-in ones, before contextual tabs).
+    fn ribbon_tabs(&self, _app: &SlideApp) -> Vec<String> {
+        Vec::new()
+    }
+    /// Draws the content of one of its ribbon tabs (groups made with `widgets::group`, like the
+    /// built-in tabs). Called only for names it returned from [`UiExtension::ribbon_tabs`].
+    fn ribbon_tab(&mut self, _app: &mut SlideApp, _ui: &mut Ui, _name: &str) {}
 }
 
 thread_local! {
@@ -99,4 +106,26 @@ pub(crate) fn context_menu(app: &mut SlideApp, ui: &mut Ui) {
 
 pub(crate) fn presenter_notes(ui: &mut Ui, doc: &Presentation, slide: usize) {
     each(|x| x.presenter_notes(ui, doc, slide));
+}
+
+pub(crate) fn ribbon_tabs(app: &SlideApp) -> Vec<String> {
+    let mut v: Vec<String> = Vec::new();
+    each(|x| {
+        for t in x.ribbon_tabs(app) {
+            if !v.contains(&t) {
+                v.push(t);
+            }
+        }
+    });
+    v
+}
+
+pub(crate) fn ribbon_tab(app: &mut SlideApp, ui: &mut Ui, name: &str) {
+    let mut done = false;
+    each(|x| {
+        if !done && x.ribbon_tabs(app).iter().any(|t| t == name) {
+            x.ribbon_tab(app, ui, name);
+            done = true;
+        }
+    });
 }
