@@ -35,7 +35,7 @@ pub mod stdio;
 pub mod xlsx;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use deckcraft_engine::ext::Observer;
 use deckcraft_engine::{EngineError, Result, Session};
@@ -75,6 +75,12 @@ pub fn active_layer(s: &Session) -> Option<Arc<Layer>> {
 }
 
 static PASTE_PICTURE: AtomicBool = AtomicBool::new(false);
+static LAST_AGENT_CALL: AtomicU64 = AtomicU64::new(0);
+
+/// When the agent last called the layer (ms since the epoch; 0: never), over HTTP or stdio.
+pub fn last_agent_call() -> u64 {
+    LAST_AGENT_CALL.load(Ordering::Relaxed)
+}
 
 /// How a plain paste of linked cells lands: a picture (`true`) or a table (default).
 pub fn set_paste_as_picture(on: bool) {
@@ -122,7 +128,10 @@ fn is_view_only(id: &str) -> bool {
 }
 
 impl Observer for Keeper {
-    fn before(&self, s: &mut Session, id: &str, _params: &Json) {
+    fn before(&self, s: &mut Session, id: &str, params: &Json) {
+        if (id.starts_with("agent.") || id.starts_with("link.")) && params.get("actor").and_then(Json::as_str) == Some("agent") {
+            LAST_AGENT_CALL.store(now_ms(), Ordering::Relaxed);
+        }
         RUNNING.with(|b| b.borrow_mut().push((id.to_string(), doc_ptr(s))));
         // Write the layer into the presentation just before it is saved.
         if matches!(id, "file.save" | "file.saveAs" | "file.saveBytes" | "file.saveTemplate")

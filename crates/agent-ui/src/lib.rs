@@ -36,7 +36,9 @@ pub fn install() {
     deckcraft_ui_egui::ext::register(Box::new(AgentUi::default()));
 }
 
-/// Tells the pane where the agent server listens (shown under Connect).
+pub use ribbon::set_stdio_entry;
+
+/// Tells the Agent tab where the agent server listens.
 pub fn set_server_url(url: String) {
     let _ = SERVER.set(url);
 }
@@ -218,6 +220,7 @@ impl UiExtension for AgentUi {
             // Read the layer now, so Presenter View finds it.
             let _ = layer::get(d);
         }
+        ribbon::keytip(self, app, ctx);
         self.checker.tick(app, ctx);
         // The Agent tab shows the status; the floating button only while the ribbon is collapsed.
         if app.show.is_none() && app.backstage.is_none() && app.ui.ribbon_collapsed {

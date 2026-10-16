@@ -4,7 +4,7 @@
 //! have since changed.
 //!
 //! `cargo run -p deckcraft-agent-ui --example agent_snapshot -- [--pane slide|questions|links|history|connect]
-//!  [--slide N] [--hover-link] [--presenter] [--agent-tab] [--size 1440x900] [--dark] out.png`
+//!  [--slide N] [--hover-link] [--presenter] [--agent-tab] [--collapsed] [--size 1440x900] [--dark] out.png`
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use deckcraft_agent::links;
@@ -128,7 +128,7 @@ fn demo(dir: &std::path::Path) -> (Session, ShapeId) {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (mut pane, mut slide, mut hover, mut dark, mut presenter, mut agent_tab) = (None, 2usize, false, false, false, false);
+    let (mut pane, mut slide, mut hover, mut dark, mut presenter, mut agent_tab, mut collapsed) = (None, 2usize, false, false, false, false, false);
     let mut size = (1440.0f32, 900.0f32);
     let mut out = "agent.png".to_string();
     let mut it = args.into_iter();
@@ -139,6 +139,7 @@ fn main() {
             "--hover-link" => hover = true,
             "--presenter" => presenter = true,
             "--agent-tab" => agent_tab = true,
+            "--collapsed" => collapsed = true,
             "--dark" => dark = true,
             "--size" => {
                 if let Some((w, h)) = it.next().as_deref().and_then(|s| s.split_once('x').map(|(w, h)| (w.to_string(), h.to_string()))) {
@@ -150,6 +151,11 @@ fn main() {
     }
     deckcraft_agent_ui::install();
     deckcraft_agent_ui::set_server_url("http://127.0.0.1:7984/mcp".into());
+    deckcraft_agent_ui::set_stdio_entry(deckcraft_agent::cowork::entry(
+        std::path::Path::new("/Applications/DeckCraft.app/Contents/MacOS/deckcraft"),
+        7985,
+    ));
+    deckcraft_agent::cowork::set_config_path(Some(std::env::temp_dir().join("deckcraft-agent-demo/claude/claude_desktop_config.json")));
     let dir = std::env::temp_dir().join("deckcraft-agent-demo");
     std::fs::create_dir_all(&dir).unwrap();
     let (mut session, table) = demo(&dir);
@@ -189,6 +195,7 @@ fn main() {
                 if agent_tab {
                     app.ui.tab = "Agent".into();
                 }
+                app.ui.ribbon_collapsed = collapsed;
                 app.ui.brightness = if dark { deckcraft_ui_egui::theme::Brightness::Dark } else { deckcraft_ui_egui::theme::Brightness::Light };
                 app
             },

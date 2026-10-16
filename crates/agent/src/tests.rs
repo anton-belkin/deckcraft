@@ -609,9 +609,10 @@ fn layer_part_is_ours_and_cdata_safe() {
 }
 
 #[test]
-fn the_stdio_bridge_starts_without_the_app_and_forwards_once_it_is_open() {
+fn the_stdio_bridge_starts_without_the_app_and_reaches_it_once_it_is_open() {
     // Nothing listens on this port.
-    let free = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let free = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().to_string();
+    let mut b = crate::stdio::Lazy::new(free);
     let input = [
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"cowork"}}}"#,
         r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
@@ -621,7 +622,7 @@ fn the_stdio_bridge_starts_without_the_app_and_forwards_once_it_is_open() {
     ]
     .join("\n");
     let mut out = Vec::new();
-    crate::stdio::serve(free, input.as_bytes(), &mut out).unwrap();
+    crate::stdio::serve(&mut b, input.as_bytes(), &mut out).unwrap();
     let lines: Vec<Json> = String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     assert_eq!(lines.len(), 4, "the notification gets no reply");
     assert_eq!(lines[0]["result"]["serverInfo"]["name"], "deckcraft-agent");
@@ -629,21 +630,18 @@ fn the_stdio_bridge_starts_without_the_app_and_forwards_once_it_is_open() {
     assert!(lines[1]["result"]["tools"].as_array().unwrap().iter().any(|t| t["name"] == "wait_for_questions"));
     assert_eq!(lines[2]["error"]["code"], -32700);
     assert_eq!(lines[3]["result"]["isError"], true);
-    assert!(lines[3]["result"]["content"][0]["text"].as_str().unwrap().contains("DeckCraft isn't open"));
+    let msg = lines[3]["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(msg.contains("not reachable") && msg.contains("Is DeckCraft open?"), "{msg}");
 
-    // Now the app is open: the same bridge reaches the deck.
+    // Now the app is open: a bridge reaches the deck through its control channel.
     let (mut s, _, numbers) = deck();
     run(&mut s, "agent.ask", json!({"text": "Where is 18.4M from?", "slide": 2, "shape": numbers.0}));
-    let port = crate::server::start(0, control_server(s)).unwrap();
-    let input = [
-        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"cowork-test"}}}"#,
-        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"wait_for_questions","arguments":{"timeout_seconds":0}}}"#,
-    ]
-    .join("\n");
+    let mut b = crate::stdio::Lazy::new(control_server(s));
+    let before = crate::last_agent_call();
+    let input = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"wait_for_questions","arguments":{"timeout_seconds":0}}}"#;
     let mut out = Vec::new();
-    crate::stdio::serve(port, input.as_bytes(), &mut out).unwrap();
+    crate::stdio::serve(&mut b, input.as_bytes(), &mut out).unwrap();
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains("Where is 18.4M from?"), "{text}");
-    let st = crate::server::status();
-    assert!(st.last_call > 0);
+    assert!(crate::last_agent_call() >= before && crate::last_agent_call() > 0, "the app sees an active agent");
 }

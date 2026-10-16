@@ -8,6 +8,10 @@ use serde_json::json;
 
 fn harness(s: Session) -> Harness<'static, SlideApp> {
     crate::install();
+    // Never the user's real Claude Desktop config.
+    deckcraft_agent::cowork::set_config_path(Some(
+        std::env::temp_dir().join(format!("deckcraft-ui-tests-{}/claude_desktop_config.json", std::process::id())),
+    ));
     let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_ui_state(
         |ui, app: &mut SlideApp| {
             app.logic(ui.ctx());
@@ -67,11 +71,36 @@ fn the_agent_tab_marks_the_selection_as_client_data() {
     let mut h = harness(s);
     h.state_mut().ui.tab = "Agent".into();
     h.run_steps(2);
-    h.get_by_label_contains("Mark Client").click();
+    h.get_by_label("Mark as Client Data").click();
     h.run_steps(2);
     let app = h.state();
     let set = deckcraft_agent::privacy::private_shapes(&app.session);
     assert!(set.iter().any(|(_, x)| u64::from(x.0) == id), "marked from the ribbon");
     assert_eq!(app.ui.tab, "Agent", "the tab stays known");
-    h.get_by_label_contains("Connect");
+    h.get_by_label("Connect Cowork");
+    h.get_by_label("Unmark Client Data");
+}
+
+#[test]
+fn keytip_a_opens_the_agent_tab_without_typing_into_the_slide() {
+    let mut s = Session::with_new();
+    s.execute("slide.new", &json!({"layout": "blank"})).unwrap();
+    let id = s.execute("insert.textBox", &json!({"rect": [60, 60, 400, 60], "text": "Hello"})).unwrap()["id"].as_u64().unwrap();
+    s.execute("selection.select", &json!({"ids": [id]})).unwrap();
+    let mut h = harness(s);
+    assert_ne!(h.state().ui.tab, "Agent");
+    h.key_press(egui::Key::F10);
+    h.run_steps(1);
+    h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+    h.event(egui::Event::Text("a".into()));
+    h.run_steps(2);
+    assert_eq!(h.state().ui.tab, "Agent");
+    let text = h.state().session.active().unwrap().doc.slides[1]
+        .shapes
+        .iter()
+        .find(|x| u64::from(x.id.0) == id)
+        .and_then(|x| x.text.as_ref())
+        .map(|t| t.text())
+        .unwrap();
+    assert_eq!(text, "Hello", "the A finished the keytip, it wasn't typed");
 }

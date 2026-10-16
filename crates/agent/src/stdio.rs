@@ -1,108 +1,70 @@
 //! The agent layer's MCP over stdio, for clients that start local servers as processes (Claude
-//! Desktop and Cowork, `claude mcp add deckcraft -- deckcraft --agent-stdio`).
-//!
-//! `deckcraft --agent-stdio` serves newline-delimited JSON-RPC on stdin/stdout and forwards tool
-//! calls to the running app's agent server (`http://127.0.0.1:7984/mcp`). `initialize` and
-//! `tools/list` are answered here, so the client starts fine before DeckCraft does; a tool called
-//! while DeckCraft isn't open says so plainly, and the next call works once it is. Nothing but
-//! protocol goes to stdout.
+//! Desktop and Cowork). `deckcraft --agent-stdio [--control 127.0.0.1:7985]` serves
+//! newline-delimited JSON-RPC on stdin/stdout with the same tools as the in-app HTTP server, and
+//! reaches the deck through the app's control channel, connected on the first tool call: Claude
+//! can start before DeckCraft does and keeps working across app restarts. `initialize` and
+//! `tools/list` work without the app; a tool called while it is closed says so. Nothing but
+//! protocol goes to stdout. Same contract as GridCraft and WordCraft.
 
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
-use std::time::Duration;
+use std::io::{BufRead, Write};
 
+use deckcraft_mcp::{Backend, Remote};
 use serde_json::{Value, json};
 
-/// Longest a forwarded call may take (`wait_for_questions` waits up to 50 s).
-const CALL_TIMEOUT: Duration = Duration::from_secs(75);
-/// Largest reply read from the app.
-const MAX_REPLY: u64 = 32 * 1024 * 1024;
+/// A backend that connects to the app's control channel on first use, and again after the app
+/// went away.
+pub struct Lazy {
+    addr: String,
+    slot: Option<Remote>,
+}
 
-/// A backend for the answers given here (no tool reaches it).
-struct Local;
-
-impl deckcraft_mcp::Backend for Local {
-    fn call(&mut self, _method: &str, _params: Value) -> Result<Value, String> {
-        Err("not connected".into())
-    }
-    fn has_ui(&self) -> bool {
-        false
-    }
-    fn describe(&self) -> String {
-        "stdio bridge".into()
+impl Lazy {
+    pub fn new(addr: String) -> Self {
+        Lazy { addr, slot: None }
     }
 }
 
-/// POSTs one JSON-RPC message to the app's `/mcp`. `Ok(None)` for an accepted notification.
-pub fn post(port: u16, body: &Value) -> Result<Option<Value>, String> {
-    let mut s = TcpStream::connect_timeout(&std::net::SocketAddr::from(([127, 0, 0, 1], port)), Duration::from_millis(500))
-        .map_err(|_| format!("DeckCraft isn't open (no agent server on 127.0.0.1:{port}). Open DeckCraft, then call the tool again."))?;
-    s.set_read_timeout(Some(CALL_TIMEOUT)).map_err(|e| e.to_string())?;
-    let body = body.to_string();
-    write!(s, "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
-        .map_err(|e| e.to_string())?;
-    let mut r = BufReader::new(s.take(MAX_REPLY));
-    let mut status = String::new();
-    r.read_line(&mut status).map_err(|e| format!("DeckCraft didn't answer: {e}"))?;
-    let code: u16 = status.split_whitespace().nth(1).and_then(|c| c.parse().ok()).ok_or("DeckCraft sent a malformed reply")?;
-    let mut len: Option<usize> = None;
-    loop {
-        let mut h = String::new();
-        if r.read_line(&mut h).map_err(|e| e.to_string())? == 0 || h == "\r\n" || h == "\n" {
-            break;
+impl Backend for Lazy {
+    fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        if self.slot.is_none() {
+            let r = Remote::connect(&self.addr)
+                .map_err(|e| format!("DeckCraft control channel at {} is not reachable ({e}). Is DeckCraft open?", self.addr))?;
+            self.slot = Some(r);
         }
-        if let Some((k, v)) = h.split_once(':')
-            && k.trim().eq_ignore_ascii_case("content-length")
+        let Some(b) = self.slot.as_mut() else { return Err("not connected".into()) };
+        let r = b.call(method, params);
+        // The connection reconnects by itself when the app comes back; say what to do meanwhile.
+        if let Err(e) = &r
+            && e.contains("not reachable")
         {
-            len = v.trim().parse().ok();
+            return Err(format!("{e}. Is DeckCraft open?"));
         }
+        r
     }
-    let mut body = Vec::new();
-    match len {
-        Some(n) => {
-            body.resize(n, 0);
-            r.read_exact(&mut body).map_err(|e| e.to_string())?;
-        }
-        None => {
-            r.read_to_end(&mut body).map_err(|e| e.to_string())?;
-        }
+    fn has_ui(&self) -> bool {
+        true
     }
-    if code == 202 || body.is_empty() {
-        return Ok(None);
+    fn describe(&self) -> String {
+        format!("the DeckCraft app at {}", self.addr)
     }
-    serde_json::from_slice(&body).map(Some).map_err(|e| format!("DeckCraft sent a malformed reply ({code}): {e}"))
 }
 
 const STDIO_NOTE: &str = " Over this stdio connection there is no event stream: listen with wait_for_questions in a loop (it returns as soon as a question is pending, or empty after up to 50 s), answer what it returned, and call it again.";
 
-/// The reply to one message.
-pub fn handle(port: u16, msg: &Value) -> Option<Value> {
-    let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
-    let id = msg.get("id").cloned();
-    if method == "tools/call" {
-        let id = id?;
-        return Some(match post(port, msg) {
-            Ok(Some(v)) => v,
-            Ok(None) => json!({"jsonrpc": "2.0", "id": id, "result": {"content": [{"type": "text", "text": "no reply"}], "isError": true}}),
-            Err(e) => json!({"jsonrpc": "2.0", "id": id, "result": {"content": [{"type": "text", "text": e}], "isError": true}}),
-        });
-    }
-    if method == "initialize" || method.starts_with("notifications/") {
-        // Let the app know an agent is there (its Connection status), when it is open.
-        let _ = post(port, msg);
-    }
-    let mut reply = crate::mcp::handle(&mut Local, msg)?;
-    if method == "initialize"
+/// The reply to one message (`None` for notifications).
+pub fn handle(b: &mut dyn Backend, msg: &Value) -> Option<Value> {
+    let mut reply = crate::mcp::handle(b, msg)?;
+    if msg.get("method").and_then(Value::as_str) == Some("initialize")
         && let Some(text) = reply.pointer_mut("/result/instructions")
         && let Some(s) = text.as_str()
     {
-        *text = Value::String(format!("{}{STDIO_NOTE}", s.replace("<port>", &port.to_string())));
+        *text = Value::String(format!("{s}{STDIO_NOTE}"));
     }
     Some(reply)
 }
 
 /// Serves newline-delimited JSON-RPC from `input` until it closes.
-pub fn serve(port: u16, input: impl BufRead, mut output: impl Write) -> std::io::Result<()> {
+pub fn serve(b: &mut dyn Backend, input: impl BufRead, mut output: impl Write) -> std::io::Result<()> {
     for line in input.lines() {
         let line = line?;
         if line.trim().is_empty() {
@@ -110,10 +72,10 @@ pub fn serve(port: u16, input: impl BufRead, mut output: impl Write) -> std::io:
         }
         let reply = match serde_json::from_str::<Value>(&line) {
             Ok(Value::Array(batch)) => {
-                let out: Vec<Value> = batch.iter().filter_map(|m| handle(port, m)).collect();
+                let out: Vec<Value> = batch.iter().filter_map(|m| handle(b, m)).collect();
                 (!out.is_empty()).then_some(Value::Array(out))
             }
-            Ok(msg) => handle(port, &msg),
+            Ok(msg) => handle(b, &msg),
             Err(_) => Some(json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "parse error"}})),
         };
         if let Some(v) = reply {
