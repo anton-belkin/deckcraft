@@ -399,6 +399,12 @@ fn open_source_and_the_registry_of_uses() {
     let plan = run(&mut s, "link.open", json!({"id": r["id"], "dryRun": true}));
     assert_eq!(plan["goto"], "_GcLink_l1");
     assert_eq!(plan["request"]["command"], "link.reveal");
+    run(&mut s, "slide.go", json!({"index": 0}));
+    let link = links::all(&s.doc().unwrap().doc)[0].2.id.clone();
+    let went = run(&mut s, "link.goto", json!({"link": link}));
+    assert_eq!(went["slide"], 2);
+    assert_eq!(s.doc().unwrap().selection.shapes, vec![ShapeId(r["id"].as_u64().unwrap() as u32)]);
+    assert_eq!(run(&mut s, "link.goto", json!({"anchor": "_GcLink_l1"}))["slide"], 2);
     let uses = run(&mut s, "link.uses", json!({}));
     assert_eq!(uses[0]["anchor"], "_GcLink_l1");
     assert_eq!(uses[0]["slide"], 2);

@@ -53,6 +53,7 @@ pub static SPECS: &[CommandSpec] = &[
     spec!(edit "link.update", "Update from Source", "{id?: shape id (default: the selected linked shape)} — brings in the source's current values", has_doc, link_update),
     spec!(query "link.open", "Open Source", "{id?, dryRun?: bool} — opens the workbook at the linked cells (in GridCraft when it runs)", has_doc, link_open),
     spec!(edit "link.unlink", "Break Link", "{id?} — keeps the table or picture, forgets the source", has_doc, link_unlink),
+    spec!(change "link.goto", "Go to Linked Cells", "{link?: link id, shapeKey?: hidden shape key, anchor?: workbook anchor name} — selects the slide and shape (the workbook's back-reference jumps here)", has_doc, link_goto),
     spec!(query "link.uses", "Where Linked Cells Are Used", "{} → this deck's entries for the links registry (links.md)", has_doc, link_uses),
 ];
 
@@ -747,4 +748,38 @@ fn link_unlink(s: &mut Session, p: &Json) -> Result<Json> {
 
 fn link_uses(s: &mut Session, _p: &Json) -> Result<Json> {
     Ok(Json::Array(links::uses(s)))
+}
+
+fn link_goto(s: &mut Session, p: &Json) -> Result<Json> {
+    let want_link = str_p(p, "link").unwrap_or("");
+    let want_key = str_p(p, "shapeKey").unwrap_or("");
+    let want_anchor = str_p(p, "anchor").unwrap_or("");
+    if want_link.is_empty() && want_key.is_empty() && want_anchor.is_empty() {
+        return Err(bad("link.goto", "pass `link`, `shapeKey` or `anchor`"));
+    }
+    let d = s.doc()?;
+    let mut hit: Option<(usize, ShapeId)> = None;
+    for (i, sl) in d.doc.slides.iter().enumerate() {
+        deckcraft_engine::model::walk(&sl.shapes, &mut |sh, _| {
+            if hit.is_some() {
+                return;
+            }
+            let key = anchor::key_of(&sh.tags).unwrap_or("");
+            let link = links::of(sh);
+            let by_link = link
+                .as_ref()
+                .is_some_and(|l| (!want_link.is_empty() && l.id == want_link) || (!want_anchor.is_empty() && l.source.anchor == want_anchor));
+            if by_link || (!want_key.is_empty() && key == want_key) {
+                hit = Some((i, sh.id));
+            }
+        });
+    }
+    let (slide, id) = hit.ok_or_else(|| bad("link.goto", "no such linked shape in this deck"))?;
+    s.select(|_, sel| {
+        sel.slide = slide;
+        sel.shapes = vec![id];
+        sel.text = None;
+        sel.cells = None;
+    })?;
+    Ok(json!({"slide": slide + 1, "shape": id.0}))
 }

@@ -112,6 +112,7 @@ fn is_view_only(id: &str) -> bool {
                 | "edit.copy"
                 | "link.check"
                 | "link.open"
+                | "link.goto"
                 | "text.edit"
         )
 }

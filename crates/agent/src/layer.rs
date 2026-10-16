@@ -310,3 +310,9 @@ pub fn write_into(doc: &mut Presentation, layer: &Layer) {
         from_root: false,
     });
 }
+
+/// The layer of a document by its uid, if it has been read (for views that only have the
+/// presentation, like Presenter View).
+pub fn by_uid(uid: u64) -> Option<Arc<Layer>> {
+    store().as_ref().and_then(|m| m.get(&uid).cloned())
+}

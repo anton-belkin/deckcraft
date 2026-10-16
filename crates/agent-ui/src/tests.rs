@@ -1,0 +1,59 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use deckcraft_engine::Session;
+use deckcraft_ui_egui::{Services, SlideApp};
+use egui_kittest::Harness;
+use egui_kittest::kittest::{NodeT, Queryable};
+use serde_json::json;
+
+fn harness(s: Session) -> Harness<'static, SlideApp> {
+    crate::install();
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_ui_state(
+        |ui, app: &mut SlideApp| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        },
+        SlideApp::new(s, Services::default()),
+    );
+    h.run_steps(4);
+    h
+}
+
+#[test]
+fn asking_from_the_pane_puts_a_question_on_the_selected_shape() {
+    let mut s = Session::with_new();
+    s.execute("slide.new", &json!({"layout": "blank"})).unwrap();
+    let id = s.execute("insert.textBox", &json!({"rect": [60, 60, 400, 60], "text": "Revenue grew 42%"})).unwrap()["id"].as_u64().unwrap();
+    s.execute("selection.select", &json!({"ids": [id]})).unwrap();
+    crate::request_pane(true, "slide");
+    let mut h = harness(s);
+    // The pane's question box (the notes pane has a text box too).
+    let is_ask = |n: &egui_kittest::Node<'_>| n.accesskit_node().placeholder().is_some_and(|p| p.contains("number come from"));
+    h.get_all_by_role(egui::accesskit::Role::MultilineTextInput).find(is_ask).expect("the question box").focus();
+    h.run_steps(1);
+    h.get_all_by_role(egui::accesskit::Role::MultilineTextInput).find(is_ask).expect("the question box").type_text("Where is 42% from?");
+    h.run_steps(1);
+    h.get_by_label("Ask the Agent").click();
+    h.run_steps(3);
+    let app = h.state();
+    let l = deckcraft_agent::active_layer(&app.session).unwrap();
+    assert_eq!(l.questions.len(), 1, "one question");
+    assert_eq!(l.questions[0].text, "Where is 42% from?");
+    let place = deckcraft_agent::anchor::resolve_id(app.session.active().unwrap(), &l, &l.questions[0].anchor).unwrap();
+    assert_eq!(place.shape.map(|x| u64::from(x.0)), Some(id));
+}
+
+#[test]
+fn presenter_view_lists_the_slide_s_prepared_answers() {
+    crate::install();
+    let mut s = Session::with_new();
+    s.execute("agent.note", &json!({"slide": 1, "kind": "faq", "title": "Is it audited?", "text": "Not yet.", "actor": "agent"})).unwrap();
+    let doc = s.doc().unwrap().doc.clone();
+    let uid = s.doc().unwrap().uid;
+    let mut h = Harness::builder().with_size(egui::vec2(400.0, 300.0)).build_ui(move |ui| {
+        crate::presenter_preview(ui, &doc, 0, uid);
+    });
+    h.run_steps(2);
+    h.get_by_label("Prepared answers (1)");
+    h.get_by_label("Is it audited?");
+}
