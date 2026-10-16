@@ -21,6 +21,15 @@ In Claude Desktop or Cowork the same tools come from the local `deckcraft` serve
 ribbon (if Claude is open, DeckCraft waits until it is quit with ⌘Q), then opens Claude. If a tool says "DeckCraft isn't open", ask the
 user to open DeckCraft, then call it again.
 
+## Through AItoCraft (several decks, several conversations)
+
+When the tools come from the `aitocraft` server, the person says which deck this conversation is
+for ("we're working on board.pptx"): call `list_documents`, then `attach` with that deck's id and a
+label (the client and project). Keep the document id and your listener id, and pass both on every
+call (`document`, `listener`): another conversation may be working on another deck at the same
+time. Listen with `wait_for_questions {document, listener}` in a loop; in a Claude Code session
+started with the channel, questions arrive as messages by themselves.
+
 ## Watch for questions
 
 Start a background monitor on the event stream; each line is a new question:

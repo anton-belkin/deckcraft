@@ -98,6 +98,25 @@ upstream. Each one accepted upstream removes its lines from the patch.
   the session and the last error are under Details. The mode is the app's (remembered in the
   settings folder, or `--agent-mode`), never the file's: a deck someone sends must not start an
   agent that spends the reader's money.
+- **AItoCraft** (`~/aitocraft/PROTOCOL.md`): one MCP hub, configured once in Claude Desktop /
+  Cowork and Claude Code, serves every open document of every Craft app; the person picks the
+  context by starting the conversation where the work belongs and saying which deck. DeckCraft's
+  side: the registry file `ArtCraft/agents/deckcraft-<pid>.json` (`registry.rs`: atomic writes,
+  at most once a second on change, a 10 s heartbeat, deleted when the window closes) lists the open
+  decks (`deckcraft:<pid>:<doc uid>`, title, path, frontmost, open questions, listeners; no
+  content). Every tool takes `document` and works on a deck that isn't active (the observer makes
+  it active for the command, so its undo step lands there, and puts the active deck back; an
+  unknown id is "document … is not open in DeckCraft"). `list_documents`, `attach {document,
+  label}` → a listener, `detach`; `listener` on the question tools refreshes it (dropped after
+  90 s); questions carry `document` and `documentTitle`; `GET /events?document=<id>` follows one
+  deck; a check goes to the active deck's listeners and records who answered. The Connection
+  status is per deck: "Listening: Cowork · Acme · 20 s ago", the check, or "Nobody is listening for
+  this document" (questions still queue). Modes, in order: Claude Desktop / Cowork (AItoCraft),
+  My Claude Code session (AItoCraft channel), Background agent, Off. Copy: Copy phrase for Claude,
+  Install AItoCraft in Claude Desktop (`aitocraft --install-desktop`, when the binary is found:
+  `AITOCRAFT_BIN`, the PATH, `~/aitocraft/target/release`), Claude Code: add AItoCraft (and, in
+  the channel mode, start with the channel). The direct connection (`--agent-stdio`, HTTP, the
+  monitor command, Connect Cowork with DeckCraft's own entry) stays under Details.
 - **Send to my Claude Code session** (Claude Code Channels, research preview): the server declares
   `experimental["claude/channel"]` and, in that mode, streams each new question on `GET /mcp`
   (SSE) as `notifications/claude/channel`. Claude Code spawns channel servers over stdio, so
@@ -105,9 +124,12 @@ upstream. Each one accepted upstream removes its lines from the patch.
   `GET /mcp` to stdout. `claude mcp add deckcraft-channel -- <deckcraft> --agent-stdio --control
   127.0.0.1:7985 --agent-port 7984`, then `claude --dangerously-load-development-channels
   server:deckcraft-channel`. Interactive sessions only (`-p` ignores channels).
-- **Background agent** (`crates/agent/src/runner.rs`): one `claude -p --input-format stream-json
-  --output-format stream-json --verbose` process per deck, started by the first open question, in
-  the deck's folder (its session sits with the deck's files in Claude Desktop's Code tab), with
+- **Background agent** (`crates/agent/src/runner.rs`, demoted to the third mode, PROTOCOL §4): one
+  `claude -p --input-format stream-json --output-format stream-json --verbose` process per deck,
+  started by the first open question, in a neutral, empty folder (`ArtCraft/agent-sessions/`) so no
+  project's CLAUDE.md, memory or settings become its context; the deck's folder only when the
+  person ticks "Use the deck's folder as its project". The mode's line says "The app runs Claude on
+  your subscription. It sees only this document. Uses your limits." With
   `--strict-mcp-config` and only the DeckCraft server, `--allowedTools "mcp__deckcraft__*"`, the
   skill as `--append-system-prompt-file`, `--max-turns 40`, `--max-budget-usd 3`. It is named
   `/rename DeckCraft · <file>`, gets each new question once as a stream-json user message, and its
