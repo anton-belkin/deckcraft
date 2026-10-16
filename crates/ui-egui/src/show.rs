@@ -1814,6 +1814,7 @@ fn presenter_window(ctx: &egui::Context, show: &mut Show, doc: &Presentation, no
                 if let Some(t) = &cur_tex {
                     ui.painter().image(t.id(), cr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
                 }
+                crate::ext::presenter_slide(ui, cr, doc, cur); // fork:agent
                 if let Some(z) = show.zoom {
                     let mark = zoom_frame(cr, z.uv());
                     ui.painter().rect_stroke(mark, CornerRadius::ZERO, Stroke::new(2.0, Color32::WHITE), egui::StrokeKind::Inside);

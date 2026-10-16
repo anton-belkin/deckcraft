@@ -49,6 +49,8 @@ pub trait UiExtension {
     }
     /// A section under the speaker notes in Presenter View.
     fn presenter_notes(&mut self, _ui: &mut Ui, _doc: &Presentation, _slide: usize) {}
+    /// Paint over the current slide's picture in Presenter View (`rect` is the slide on screen).
+    fn presenter_slide(&mut self, _ui: &mut Ui, _rect: Rect, _doc: &Presentation, _slide: usize) {}
     /// Ribbon tabs this extension adds (after the built-in ones, before contextual tabs).
     fn ribbon_tabs(&self, _app: &SlideApp) -> Vec<String> {
         Vec::new()
@@ -128,4 +130,8 @@ pub(crate) fn ribbon_tab(app: &mut SlideApp, ui: &mut Ui, name: &str) {
             done = true;
         }
     });
+}
+
+pub(crate) fn presenter_slide(ui: &mut Ui, rect: Rect, doc: &Presentation, slide: usize) {
+    each(|x| x.presenter_slide(ui, rect, doc, slide));
 }
