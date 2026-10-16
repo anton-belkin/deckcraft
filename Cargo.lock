@@ -910,6 +910,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "deckcraft-agent"
+version = "0.7.0"
+dependencies = [
+ "deckcraft-engine",
+ "deckcraft-geom",
+ "deckcraft-mcp",
+ "deckcraft-model",
+ "deckcraft-pptx",
+ "log",
+ "serde",
+ "serde_json",
+ "zip",
+]
+
+[[package]]
+name = "deckcraft-agent-ui"
+version = "0.7.0"
+dependencies = [
+ "deckcraft-agent",
+ "deckcraft-engine",
+ "deckcraft-geom",
+ "deckcraft-ui-egui",
+ "egui",
+ "egui_kittest",
+ "serde_json",
+]
+
+[[package]]
 name = "deckcraft-anim"
 version = "0.7.0"
 dependencies = [
