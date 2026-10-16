@@ -195,7 +195,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
 }
 
 pub fn find_command(id: &str) -> Option<&'static CommandSpec> {
-    command_specs().iter().find(|c| c.id == id)
+    command_specs().iter().find(|c| c.id == id).or_else(|| crate::ext::find(id)) // fork:agent — extension commands too
 }
 
 pub(crate) fn param_keys(doc: &str) -> std::result::Result<Vec<&str>, String> {

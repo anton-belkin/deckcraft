@@ -11,6 +11,7 @@ pub mod cmd;
 pub mod compare;
 pub mod connect;
 pub mod drawtable;
+pub mod ext; // fork:agent — extension commands and observers
 pub mod file_access;
 pub mod fonts;
 pub mod gif_export;
@@ -577,7 +578,10 @@ impl Session {
     /// Run command `id`. A panic inside it becomes [`EngineError::Internal`] and leaves the
     /// presentation as it was.
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value> {
-        self.guarded(id, |s| s.execute_unguarded(id, params))
+        ext::before(self, id, params); // fork:agent
+        let r = self.guarded(id, |s| s.execute_unguarded(id, params)); // fork:agent
+        ext::after(self, id, params, &r); // fork:agent
+        r // fork:agent
     }
 
     fn execute_unguarded(&mut self, id: &str, params: &Value) -> Result<Value> {
@@ -595,7 +599,7 @@ impl Session {
         let before = self.active().map(|d| (d.uid, d.doc.clone(), d.selection.clone()));
         let outer = self.depth == 0;
         self.depth += 1;
-        let r = (spec.run)(self, params);
+        let r = ext::intercept(self, id, params).unwrap_or_else(|| (spec.run)(self, params)); // fork:agent
         self.depth -= 1;
         let r = match r {
             Ok(r) => r,
@@ -636,7 +640,7 @@ impl Session {
     }
 
     pub fn commands(&self) -> Vec<CommandInfo> {
-        command_specs().iter().map(|c| c.info(self)).collect()
+        command_specs().iter().chain(ext::commands()).map(|c| c.info(self)).collect() // fork:agent — + extension commands
     }
 
     /// Mutate the active presentation (copy-on-write) and bump the revision.
