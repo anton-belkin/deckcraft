@@ -29,7 +29,7 @@ winresource = "0.1"
 rfd = { workspace = true }
 arboard = { workspace = true, features = ["image-data"] }
 image = { workspace = true }
-cpal = "0.16"
+cpal = "0.18" # fork:agent: the same cpal as craft-voice (voice questions); only one may link alsa
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 winit = { version = "0.30", default-features = false, features = ["x11"] }

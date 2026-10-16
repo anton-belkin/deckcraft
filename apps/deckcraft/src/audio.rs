@@ -56,23 +56,25 @@ impl AudioOut for CpalOut {
         let dev = cpal::default_host().default_output_device().ok_or("no audio output device")?;
         let cfg = dev.default_output_config().map_err(|e| e.to_string())?;
         let channels = cfg.channels() as usize;
-        let rate = cfg.sample_rate().0;
-        let config: cpal::StreamConfig = cfg.clone().into();
+        let rate = cfg.sample_rate(); // fork:agent: cpal 0.18
+        let config: cpal::StreamConfig = cfg.into(); // fork:agent: cpal 0.18 (Copy)
         let slot = self.error.clone();
         let dead = Arc::new(AtomicBool::new(false));
         self.dead = dead.clone();
-        let err = move |e: cpal::StreamError| {
-            if matches!(e, cpal::StreamError::DeviceNotAvailable) {
+        let err = move |e: cpal::Error| {
+            // fork:agent: cpal 0.18
+            if e.kind() == cpal::ErrorKind::DeviceNotAvailable {
+                // fork:agent: cpal 0.18
                 dead.store(true, Ordering::Relaxed);
             }
             keep_stream_error(&slot, &e);
         };
         let stream = match cfg.sample_format() {
-            cpal::SampleFormat::F32 => dev.build_output_stream(&config, move |buf: &mut [f32], _| fill(buf, channels, rate), err, None),
+            cpal::SampleFormat::F32 => dev.build_output_stream(config, move |buf: &mut [f32], _| fill(buf, channels, rate), err, None), // fork:agent: cpal 0.18
             cpal::SampleFormat::I16 => {
                 let mut tmp = Vec::new();
                 dev.build_output_stream(
-                    &config,
+                    config, // fork:agent: cpal 0.18
                     move |buf: &mut [i16], _| {
                         tmp.resize(buf.len(), 0.0);
                         fill(&mut tmp, channels, rate);

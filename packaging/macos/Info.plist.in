@@ -42,6 +42,7 @@
   <true/>
   <key>NSRequiresAquaSystemAppearance</key>
   <false/>
+  <key>NSMicrophoneUsageDescription</key><string>DeckCraft listens only while you hold the voice key, to turn a spoken question into text on this Mac. Audio is never stored or sent anywhere.</string> <!-- fork:agent -->
   <key>NSHumanReadableCopyright</key>
   <string>Copyright © the DeckCraft authors. MIT OR Apache-2.0.</string>
 
