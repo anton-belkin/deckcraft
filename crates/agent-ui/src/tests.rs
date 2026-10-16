@@ -162,7 +162,8 @@ fn the_context_group_switches_modes_and_gets_ready_without_ping_wording() {
     h.run_steps(2);
     deckcraft_agent::context::set_folder_picker(None);
     assert_eq!(kind(&h).folder, "/tmp/Acme board");
-    assert_eq!(deckcraft_agent::listener::mode(), deckcraft_agent::listener::Mode::Background);
+    // The document's mode (the app's follows the active document; other tests run beside this one).
+    assert_eq!(kind(&h).mode(), deckcraft_agent::listener::Mode::Background);
     h.get_by_label_contains("Acme board");
     let _ = h.state_mut().run("agent.contextMode", json!({"kind": "cowork"}));
 }
@@ -323,4 +324,29 @@ fn the_file_context_button_opens_it_and_the_person_s_entry_is_undoable() {
     let _ = h.state_mut().run("edit.undo", json!({}));
     h.run_steps(2);
     assert_eq!(count(&h), 1, "the person's entry is undoable");
+}
+
+#[test]
+fn the_context_lamp_says_working_on_which_topic_and_opens_it() {
+    let (mut s, id) = deck_with_box("Revenue grew 42%");
+    let _ = s.execute("agent.contextMode", &json!({"kind": "cowork"}));
+    let q = s.execute("agent.ask", &json!({"text": "Basis?", "slide": 2, "shape": id})).unwrap();
+    s.execute("agent.claim", &json!({"id": q["id"], "actor": "agent"})).unwrap();
+    s.select(|_, sel| {
+        sel.text = None;
+        sel.shapes.clear();
+    })
+    .unwrap();
+    let mut h = harness(s);
+    h.state_mut().ui.tab = "Agent".into();
+    h.run_steps(2);
+    h.get_by_label("Working… · topic 1").click();
+    h.run_steps(3);
+    assert!(h.state().session.active().unwrap().selection.shapes.iter().any(|x| u64::from(x.0) == id), "the lamp opened the topic");
+    // Answered: the work is over.
+    let _ = h.state_mut().run("agent.answer", json!({"id": q["id"], "actor": "agent", "text": "Same basis."}));
+    h.run_steps(2);
+    assert!(h.query_by_label_contains("Working").is_none());
+    // The agent has just worked here: green Ready, not grey (GridCraft 7a28110).
+    h.get_by_label("Ready");
 }

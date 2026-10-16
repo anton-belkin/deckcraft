@@ -212,6 +212,65 @@ pub fn command(s: &mut Session, p: &Json) -> Result<Json> {
     Ok(c.json())
 }
 
+// ---------------------------------------------------------------- working
+
+/// The work counts as over after this long without the agent doing anything.
+pub const IDLE_MS: u64 = 90_000;
+/// A proposal step keeps its topic "being worked on" this long.
+pub const DRAFTING_MS: u64 = 10_000;
+
+/// When the agent last worked on each document (its calls on it), ms.
+static WORK: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
+
+/// The agent called the layer on this document.
+pub fn note_work(uid: u64) {
+    let mut g = WORK.lock().unwrap_or_else(|p| p.into_inner());
+    g.retain(|(u, _)| *u != uid);
+    g.push((uid, crate::now_ms()));
+    let n = g.len();
+    if n > 64 {
+        g.drain(..n - 64);
+    }
+}
+
+/// When the agent last worked on this document (0: not in this run).
+pub fn last_work(uid: u64) -> u64 {
+    WORK.lock().unwrap_or_else(|p| p.into_inner()).iter().find(|(u, _)| *u == uid).map_or(0, |x| x.1)
+}
+
+/// The agent worked on this document within the listener window: it counts as present (the lamp
+/// goes back to green Ready when the work ends, not grey), even without a listener's heartbeat.
+pub fn recently_worked(uid: u64) -> bool {
+    let at = last_work(uid);
+    at > 0 && crate::now_ms().saturating_sub(at) < IDLE_MS
+}
+
+/// The topics the agent is working on in this document now: a question claimed and not answered,
+/// or a proposal being built (a step within the last few seconds). Empty when nothing happened for
+/// [`IDLE_MS`].
+pub fn working(d: &DocState) -> Vec<String> {
+    let l = layer::get(d);
+    let now = crate::now_ms();
+    let drafted = l.drafting.iter().map(|x| x.1).max().unwrap_or(0);
+    let last = last_work(d.uid).max(drafted);
+    if now.saturating_sub(last) >= IDLE_MS {
+        return vec![];
+    }
+    let mut out: Vec<String> = vec![];
+    for q in &l.questions {
+        if q.status == layer::QuestionStatus::Working && !q.hidden && !q.is_ping() && !out.contains(&q.topic) {
+            out.push(q.topic.clone());
+        }
+    }
+    for (t, at) in &l.drafting {
+        if now.saturating_sub(*at) < DRAFTING_MS && !out.contains(t) {
+            out.push(t.clone());
+        }
+    }
+    out.retain(|t| l.topic(t).is_some_and(|x| !x.hidden));
+    out
+}
+
 // ---------------------------------------------------------------- readiness checks
 
 /// What the app found out about the person's setup (each looked at in the background).

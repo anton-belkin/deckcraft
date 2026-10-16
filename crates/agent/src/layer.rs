@@ -338,6 +338,9 @@ pub struct Layer {
     /// The file's own context: what the deck is, for whom, house rules, background.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub file_context: Vec<crate::file_context::Entry>,
+    /// Topics the agent recorded a proposal step in, and when (memory only): the lamp's Working.
+    #[serde(skip)]
+    pub drafting: Vec<(String, u64)>,
     /// What happened to proposals, for the agent's event stream (memory only).
     #[serde(skip)]
     pub events: Vec<crate::proposals::Event>,

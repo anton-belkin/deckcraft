@@ -1491,3 +1491,40 @@ fn the_file_context_reaches_the_agent_is_kept_when_sent_and_the_person_s_edits_u
     run(&mut s, "edit.undo", json!({}));
     assert_eq!(crate::active_layer(&s).unwrap().file_context.len(), 1);
 }
+
+#[test]
+fn the_agent_is_working_while_a_question_is_claimed_or_a_proposal_is_being_built() {
+    let (mut s, client, numbers) = deck();
+    let q = run(&mut s, "agent.ask", json!({"text": "Basis?", "slide": 2, "shape": numbers.0}));
+    let (id, t) = (q["id"].as_str().unwrap().to_string(), q["topicId"].as_str().unwrap().to_string());
+    assert!(crate::context::working(s.active().unwrap()).is_empty(), "asked, not taken");
+    run(&mut s, "agent.claim", json!({"id": id, "actor": "agent"}));
+    assert_eq!(crate::context::working(s.active().unwrap()), vec![t.clone()]);
+    run(&mut s, "agent.answer", json!({"id": id, "actor": "agent", "text": "Same basis."}));
+    assert!(crate::context::working(s.active().unwrap()).is_empty(), "answered: the work is over");
+    // A proposal being built.
+    let t2 = run(&mut s, "agent.ask", json!({"text": "Client line?", "slide": 2, "shape": client.0}))["topicId"].as_str().unwrap().to_string();
+    run(&mut s, "agent.exec", json!({"actor": "agent", "topic": t2, "command": "text.set", "params": {"id": client.0, "text": "For the client"}}));
+    assert_eq!(crate::context::working(s.active().unwrap()), vec![t2.clone()]);
+    // Nothing for a while: over.
+    layer::update(s.doc().unwrap(), |l| {
+        for d in &mut l.drafting {
+            d.1 = d.1.saturating_sub(crate::context::IDLE_MS + 1);
+        }
+    });
+    assert!(crate::context::working(s.active().unwrap()).iter().all(|x| *x != t2));
+}
+
+#[test]
+fn an_agent_that_just_worked_here_counts_as_present() {
+    let (mut s, _, numbers) = deck();
+    let uid = s.doc().unwrap().uid;
+    let q = run(&mut s, "agent.ask", json!({"text": "Basis?", "slide": 2, "shape": numbers.0}));
+    run(&mut s, "agent.claim", json!({"id": q["id"], "actor": "agent"}));
+    run(&mut s, "agent.answer", json!({"id": q["id"], "actor": "agent", "text": "Same basis."}));
+    assert!(crate::context::working(s.active().unwrap()).is_empty());
+    assert!(crate::context::recently_worked(uid), "the work just ended: still present");
+    // Another deck the agent never touched.
+    run(&mut s, "file.new", json!({}));
+    assert!(!crate::context::recently_worked(s.doc().unwrap().uid));
+}

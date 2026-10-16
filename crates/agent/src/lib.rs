@@ -181,6 +181,14 @@ impl Observer for Keeper {
             prev = s.active_index();
             s.set_active(i);
         }
+        // The agent's call on this deck: it is working here, or has just been (the lamp).
+        if (id.starts_with("agent.") || id.starts_with("link."))
+            && params.get("actor").and_then(Json::as_str) == Some("agent")
+            && counts_as_call(params)
+            && let Some(d) = s.active()
+        {
+            context::note_work(d.uid);
+        }
         RUNNING.with(|b| b.borrow_mut().push((id.to_string(), doc_ptr(s), prev)));
         // Write the layer into the presentation just before it is saved.
         if matches!(id, "file.save" | "file.saveAs" | "file.saveBytes" | "file.saveTemplate")

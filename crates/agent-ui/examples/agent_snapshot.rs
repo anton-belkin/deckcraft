@@ -6,7 +6,7 @@
 //!
 //! `cargo run -p deckcraft-agent-ui --example agent_snapshot -- [--pane selection|overview|history|topic:N]
 //!  [--slide N] [--hover-link] [--presenter] [--agent-tab] [--collapsed]
-//!  [--voice off|idle|record|download] [--context none|web|cowork|code|folder] [--status listening|checking] [--logged-in] [--menu steps|modes] [--size 1440x900] [--dark] out.png`
+//!  [--working-one|--idle] [--voice off|idle|record|download] [--context none|web|cowork|code|folder] [--status listening|checking] [--logged-in] [--menu steps|modes] [--size 1440x900] [--dark] out.png`
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use deckcraft_agent::links;
@@ -222,6 +222,9 @@ fn main() {
     let mut size = (1440.0f32, 900.0f32);
     let mut voice: Option<String> = None;
     let mut file_context = false;
+    // The Context lamp: Working on two topics (the demo's claimed question and the proposal just
+    // recorded), on one (`--working-one`: the proposal is older), or not working (`--idle`).
+    let mut work: Option<&str> = None;
     let mut hover_label: Option<String> = None;
     let mut out = "agent.png".to_string();
     let mut it = args.into_iter();
@@ -238,6 +241,8 @@ fn main() {
             "--menu" => menu = it.next(),
             "--logged-in" => logged_in = true,
             "--file-context" => file_context = true,
+            "--working-one" => work = Some("one"),
+            "--idle" => work = Some("idle"),
             "--hover-label" => hover_label = it.next(),
             "--voice" => voice = it.next(),
             "--dark" => dark = true,
@@ -312,6 +317,21 @@ fn main() {
                 downloading: Some((61_000_000, 190_000_000)),
             }),
             _ => {}
+        }
+    }
+    if let Some(w) = work {
+        let d = session.doc().unwrap();
+        deckcraft_agent::layer::update(d, |l| l.drafting.clear());
+        if w == "idle" {
+            let claimed: Vec<String> = deckcraft_agent::layer::get(d)
+                .questions
+                .iter()
+                .filter(|q| q.status == deckcraft_agent::layer::QuestionStatus::Working)
+                .map(|q| q.id.clone())
+                .collect();
+            for id in claimed {
+                run(&mut session, "agent.answer", json!({"id": id, "actor": "agent", "text": "West grew faster because of the reclassification."}));
+            }
         }
     }
     if slide != 2 {

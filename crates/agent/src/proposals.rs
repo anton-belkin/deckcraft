@@ -290,6 +290,8 @@ pub fn record(s: &mut Session, p: &Json, command: &str, params: &Json, reason: &
         if let Some(t) = l.topics.iter_mut().find(|t| t.id == id) {
             t.draft = Some(prop);
         }
+        l.drafting.retain(|(t, _)| *t != id);
+        l.drafting.push((id.clone(), now_ms()));
     });
     Ok(
         json!({"ok": true, "topic": tid, "option": option, "changes": n, "proposed": true, "hint": "recorded in the topic's proposal: the person applies it in the document"}),

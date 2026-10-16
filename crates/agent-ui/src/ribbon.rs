@@ -188,6 +188,7 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui) {
     let ready: usize = topics::visible(&l).map(|x| topics::unread(&l, x)).sum();
     let working = topics::visible(&l).filter(|x| topics::working(&l, x)).count();
     let (all, agreed, revise, open, info) = topics::readiness(&l);
+    let working_now = !deckcraft_agent::context::working(d).is_empty();
     let all_links = links::all(&d.doc);
     let checks: Vec<Option<links::Check>> = all_links.iter().map(|(_, _, k)| links::last_check(&k.id)).collect();
     let stale: Vec<u32> = all_links
@@ -224,7 +225,15 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui) {
             (s, color)
         };
         let tip = format!("The Agent pane: the selection's topics, the overview, the history (keytip A)\n{}", topics::readiness_text(&l));
-        if status_button(ui, Icon::Sparkle, "Agent", Some((&sub.0, sub.1)), true, st.open).on_hover_text(tip).clicked() {
+        let b = status_button(ui, Icon::Sparkle, "Agent", Some((&sub.0, sub.1)), true, st.open);
+        // The agent is working on this deck: the same small blue pulse as the Context lamp.
+        if working_now {
+            let time = ui.input(|i| i.time);
+            let dot = pos2(b.rect.center().x + 12.0, b.rect.min.y + 6.0);
+            ui.painter().circle_filled(dot, 4.5, crate::context::pulse(p.working, time));
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+        }
+        if b.on_hover_text(tip).clicked() {
             st.open = !st.open;
             if st.open && ready > 0 {
                 st.tab = Tab::Overview;

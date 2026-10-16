@@ -201,7 +201,15 @@ upstream. Each one accepted upstream removes its lines from the patch.
   Web changes. The old Status line, Check, Mode list and Copy menu are gone; the direct connection
   (HTTP, the monitor command, DeckCraft's own channel server, Connect Cowork with DeckCraft's own
   entry) and the background session (Open in Claude Desktop, New session, the resume command) are
-  under Details at the bottom of the mode menu.
+  under Details at the bottom of the mode menu. The lamp's fourth state, first in order (Working > Ready > Waiting
+  > Not ready), is **Working…**: blue and pulsing like a topic marker the agent works on, while a
+  question of this deck is claimed and not answered or a proposal step was recorded in the last
+  10 s, until nothing has happened for 90 s (`context::working`). One topic: "Working… · topic 3",
+  and a click opens it; the tooltip names who works (the AItoCraft listener's label, the background
+  agent, the project folder). Only Working repaints at ~30 fps; the Agent button shows the same
+  pulse. When the work ends the lamp goes back to green Ready, not grey: an agent that called the
+  layer on this deck within the listener window (90 s, `context::recently_worked`) counts as
+  present, heartbeat or not (as GridCraft 7a28110).
 - **AItoCraft** (`~/aitocraft/PROTOCOL.md`): one MCP hub, configured once in Claude Desktop /
   Cowork and Claude Code, serves every open document of every Craft app; the person picks the
   context by starting the conversation where the work belongs and saying which deck. DeckCraft's

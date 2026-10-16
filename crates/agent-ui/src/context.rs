@@ -53,6 +53,8 @@ pub(crate) struct State {
 /// The Ready lamp.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Lamp {
+    /// The agent is working on a question or a proposal of this document (blue, pulsing).
+    Working,
     Ready,
     Waiting,
     NotReady,
@@ -61,6 +63,7 @@ pub(crate) enum Lamp {
 impl Lamp {
     pub fn label(self) -> &'static str {
         match self {
+            Lamp::Working => "Working…",
             Lamp::Ready => "Ready",
             Lamp::Waiting => "Waiting",
             Lamp::NotReady => "Not ready",
@@ -69,6 +72,7 @@ impl Lamp {
     fn color(self, t: &Tokens) -> Color32 {
         let p = palette(t);
         match self {
+            Lamp::Working => p.working,
             Lamp::Ready => p.answered,
             Lamp::Waiting => p.pending,
             Lamp::NotReady => t.text_faint,
@@ -117,6 +121,26 @@ fn steps(c: &Context, setup: &Setup, copied: impl Fn(Step) -> bool, ready: bool)
         }
         (Kind::Code, Code::Folder) => vec![(Step::ChooseFolder, !c.folder.is_empty())],
     }
+}
+
+/// Who works on this document, for the Working lamp's tooltip ("Cowork · Acme").
+fn who(c: &Context, uid: u64) -> String {
+    match listener::health(Some(uid)) {
+        Health::Listening { label, .. } => return label,
+        Health::Answering { by, .. } if !by.is_empty() => return by,
+        _ => {}
+    }
+    match (c.mode(), c.cwd()) {
+        (Mode::Background, Some(dir)) => format!("Claude in {}", dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()),
+        (Mode::Background, None) => "the background agent".into(),
+        (Mode::Channel, _) => "your Claude Code session".into(),
+        _ => "your Cowork chat".into(),
+    }
+}
+
+/// A lamp's colour now: Working pulses (the topic markers' blue).
+pub(crate) fn pulse(c: Color32, time: f64) -> Color32 {
+    c.gamma_multiply(0.55 + 0.45 * (time * 4.0).sin().abs() as f32)
 }
 
 /// The lamp for a document, and what it says on hover.
@@ -295,7 +319,32 @@ pub(crate) fn group(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui) {
     let setup = context::setup(false);
     // Amber ends when a listener attaches, or after a while.
     let waiting = st.ribbon.context.waiting.get(&uid).is_some_and(|since| now - since < WAITING_FOR);
-    let (lamp, tip) = lamp(&ctx, &setup, Some(uid), waiting);
+    let (mut lamp, mut tip) = lamp(&ctx, &setup, Some(uid), waiting);
+    // The agent has just worked here: present, green, for the listener window.
+    if lamp != Lamp::Ready && context::recently_worked(uid) {
+        let secs = deckcraft_agent::now_ms().saturating_sub(context::last_work(uid)) / 1000;
+        lamp = Lamp::Ready;
+        tip = format!("Ready: {} worked on this document {secs} s ago", who(&ctx, uid));
+    }
+    // Working comes first: a question claimed and not answered, or a proposal being built.
+    let busy = context::working(d);
+    let mut lamp_label = lamp.label().to_string();
+    if !busy.is_empty() {
+        lamp = Lamp::Working;
+        tip = format!("Working: {}", who(&ctx, uid));
+        let l = deckcraft_agent::layer::get(d);
+        let nums = deckcraft_agent::topics::numbers_of(d, &l);
+        lamp_label = match busy.as_slice() {
+            [one] => format!("Working… · topic {}", nums.topic(one)),
+            _ => "Working…".to_string(),
+        };
+        tip.push_str(&format!(
+            "\n{}. Click to open {}",
+            if busy.len() == 1 { "One topic" } else { "Several topics" },
+            if busy.len() == 1 { "it" } else { "the first" }
+        ));
+    }
+    let lamp_color = if lamp == Lamp::Working { pulse(lamp.color(&t), now) } else { lamp.color(&t) };
     if lamp == Lamp::Ready {
         st.ribbon.context.waiting.remove(&uid);
     }
@@ -311,7 +360,12 @@ pub(crate) fn group(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui) {
         st.ribbon.context.last_ping = Some(now);
         let _ = app.run("agent.ping", json!({}));
     }
-    ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+    // Repaint for the pulse only while Working (about 30 fps); otherwise rarely.
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(match lamp {
+        Lamp::Working => 33,
+        Lamp::Waiting => 1_000,
+        _ => 5_000,
+    }));
 
     deckcraft_ui_egui::widgets::group(ui, |ui| {
         // Left: the mode, with the lamp's dot.
@@ -327,7 +381,7 @@ pub(crate) fn group(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui) {
         };
         let b = status_button(ui, icon, label, None, true, false);
         let dot = pos2(b.rect.center().x + 12.0, b.rect.min.y + 6.0);
-        ui.painter().circle_filled(dot, 4.5, lamp.color(&t));
+        ui.painter().circle_filled(dot, 4.5, lamp_color);
         ui.painter().circle_stroke(dot, 4.5, egui::Stroke::new(1.0, t.chrome));
         let b = b.on_hover_text(format!("{}: {}\n{tip}", ctx.kind.label(), ctx.kind.line()));
         egui::Popup::menu(&b).show(|ui| {
@@ -379,8 +433,14 @@ pub(crate) fn group(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui) {
             ui.horizontal(|ui| {
                 ui.set_height(20.0);
                 let (r, _) = ui.allocate_exact_size(vec2(14.0, 18.0), Sense::hover());
-                ui.painter().circle_filled(r.center(), 5.0, lamp.color(&t));
-                ui.add(egui::Label::new(RichText::new(lamp.label()).size(12.5).color(t.text)).selectable(false)).on_hover_text(&tip);
+                ui.painter().circle_filled(r.center(), 5.0, lamp_color);
+                let text = RichText::new(&lamp_label).size(12.5).color(if lamp == Lamp::Working { lamp.color(&t) } else { t.text });
+                let resp = ui.add(egui::Label::new(text).selectable(false).sense(Sense::click())).on_hover_text(&tip);
+                if resp.clicked()
+                    && let Some(tid) = busy.first()
+                {
+                    crate::open_topic(st, app, tid, None);
+                }
                 if ctx.kind == Kind::Code && ctx.code == Code::Folder && !ctx.folder.is_empty() {
                     let name =
                         std::path::Path::new(&ctx.folder).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| ctx.folder.clone());
