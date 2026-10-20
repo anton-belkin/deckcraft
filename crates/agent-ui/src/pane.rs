@@ -94,6 +94,20 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut SlideApp, ui: &mut Ui) {
                 }
             });
             ui.separator();
+            // A layer this build couldn't read: kept in the file as it is, changes here aren't saved.
+            if let Some(why) = &l.origin.unreadable {
+                egui::Frame::NONE.fill(p.open.gamma_multiply(0.12)).corner_radius(4.0).inner_margin(6.0).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new("This deck's agent layer couldn't be read").small().strong().color(p.open));
+                    ui.label(
+                        RichText::new(format!(
+                            "It may come from a newer DeckCraft ({why}). It stays in the file exactly as it is: saving won't change it, and topics added here aren't saved."
+                        ))
+                        .small(),
+                    );
+                });
+                ui.add_space(4.0);
+            }
             if st.file_context {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| file_context_view(st, app, ui, &l, &t, &p, &mut acts));
                 return;
@@ -1017,12 +1031,19 @@ fn history_tab(app: &SlideApp, ui: &mut Ui, l: &Layer, t: &Tokens, p: &Palette, 
         };
         ui.horizontal_wrapped(|ui| {
             let who = match e.actor {
+                _ if e.kind == "warning" => "Reading the file",
                 Actor::Agent => "Agent",
                 Actor::App => "DeckCraft",
                 _ => "You",
             };
+            let color = if e.kind == "warning" { p.open } else { color };
             ui.label(RichText::new(who).small().strong().color(color));
-            ui.label(RichText::new(if e.kind == "decision" { "decided" } else { "changed" }).small().color(t.text_faint));
+            let did = match e.kind.as_str() {
+                "decision" => "decided",
+                "warning" => "worked around",
+                _ => "changed",
+            };
+            ui.label(RichText::new(did).small().color(t.text_faint));
             ui.label(RichText::new(ago(e.at)).small().color(t.text_faint));
             if let Some(pl) = e.anchor.as_deref().and_then(|a| place_of(app, l, a))
                 && ui.link(RichText::new(format!("slide {}", pl.slide + 1)).small()).clicked()

@@ -149,6 +149,14 @@ upstream. Each one accepted upstream removes its lines from the patch.
   `urn:deckcraft:agent-layer:v1`, JSON in CDATA, `customXml/deckcraftAgent.xml`) just before a
   save, by an observer on `file.save*`. DeckCraft and PowerPoint keep custom XML parts, so the
   layer survives a round trip through PowerPoint.
+- **A layer from another build loses nothing** (as GridCraft 55430b4). An unknown enum value
+  (a status, a context kind, an actor) reads as its default, and an unknown context kind as no
+  context of the deck's own (never "No context", which would start a background agent); list
+  entries are read one by one, and one that can't be read is left out with a warning in History
+  ("Reading the file · worked around"). A save is a three-way merge of the file's JSON, the layer
+  as read and the layer now (`layer::merge3`): what this build didn't change goes back as the file
+  had it, unknown fields, values and unreadable entries included. A part that can't be read at all
+  is never overwritten (`origin.unreadable`), and the pane says so.
 - **Anchors are hidden keys in tags** (`DECKCRAFT_AGENT_KEY` in the slide's and the shape's
   `p:custDataLst`), the deck's equivalent of GridCraft's hidden defined names: they survive the
   renumbering of ids on open, slide moves, copy and paste, and PowerPoint. An anchor is a slide, a

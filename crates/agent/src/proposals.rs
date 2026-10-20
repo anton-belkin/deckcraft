@@ -25,7 +25,7 @@ use crate::layer::{self, Actor, Layer, Note, Topic};
 use crate::undo::{self, Op};
 use crate::{bad, now_ms, topics};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum State {
     #[default]

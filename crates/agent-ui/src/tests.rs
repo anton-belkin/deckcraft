@@ -350,3 +350,23 @@ fn the_context_lamp_says_working_on_which_topic_and_opens_it() {
     // The agent has just worked here: green Ready, not grey (GridCraft 7a28110).
     h.get_by_label("Ready");
 }
+
+#[test]
+fn the_pane_says_when_the_deck_s_layer_cant_be_read() {
+    crate::install();
+    let mut doc = Session::with_new().doc().unwrap().doc.as_ref().clone();
+    doc.kept_parts.push(deckcraft_engine::model::KeptPart {
+        name: "customXml/deckcraftAgent.xml".into(),
+        content_type: "application/xml".into(),
+        xml: format!("<agentLayer xmlns=\"{}\"><![CDATA[{{\"topics\": [ oops]]></agentLayer>", deckcraft_agent::layer::NS),
+        rel_type: String::new(),
+        from_root: false,
+    });
+    let mut s = Session::new();
+    let i = s.add_document(deckcraft_engine::DocState::new(doc, None, "newer".into()));
+    s.set_active(i);
+    crate::request_pane(true, "selection");
+    let mut h = harness(s);
+    h.run_steps(2);
+    h.get_by_label("This deck's agent layer couldn't be read");
+}

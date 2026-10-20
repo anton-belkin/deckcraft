@@ -20,7 +20,7 @@ use serde_json::{Value as Json, json};
 use crate::layer;
 use crate::listener::{self, Mode};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     #[default]
@@ -74,7 +74,7 @@ impl Kind {
 }
 
 /// Claude Code: the person's session, or a project folder.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Code {
     #[default]

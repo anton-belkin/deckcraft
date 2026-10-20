@@ -1528,3 +1528,120 @@ fn an_agent_that_just_worked_here_counts_as_present() {
     run(&mut s, "file.new", json!({}));
     assert!(!crate::context::recently_worked(s.doc().unwrap().uid));
 }
+
+// ---------------------------------------------------------------- a layer from another build
+
+/// A deck whose agent layer is this JSON (as another build wrote it).
+fn deck_with_layer(json: &str) -> deckcraft_model::Presentation {
+    let mut doc = deckcraft_model::Presentation::default();
+    let xml =
+        format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<agentLayer xmlns=\"{}\"><![CDATA[{json}]]></agentLayer>", layer::NS);
+    doc.kept_parts.push(deckcraft_model::KeptPart {
+        name: "customXml/deckcraftAgent.xml".into(),
+        content_type: "application/xml".into(),
+        xml,
+        rel_type: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXml".into(),
+        from_root: false,
+    });
+    doc
+}
+
+/// The layer's JSON as a deck holds it.
+fn layer_json(doc: &deckcraft_model::Presentation) -> Json {
+    let part = doc.kept_parts.iter().find(|p| p.xml.contains(layer::NS)).unwrap();
+    let start = part.xml.find("<![CDATA[").unwrap() + 9;
+    let end = part.xml.rfind("]]>").unwrap();
+    serde_json::from_str(&part.xml[start..end]).unwrap()
+}
+
+const NEWER: &str = r#"{
+    "version": 3, "next_id": 20, "futureSetting": {"x": 1},
+    "anchors": [{"id": "a1", "slide_key": "k1", "slide": 0}],
+    "topics": [
+        {"id": "t1", "places": [{"id": "p1", "anchors": ["a1"], "by": "human"}], "status": "open", "status_by": "human", "priority": "high", "at": 1},
+        {"id": "t9", "places": "this is not a list", "status": "open"},
+        {"id": "t5", "places": [], "status": "blocked", "status_text": "waiting for legal", "status_by": "robot", "at": 2}
+    ],
+    "questions": [
+        {"id": "q2", "anchor": "a1", "text": "Why?", "status": "answered", "seen": true, "topic": "t1", "answer": {"text": "Because.", "at": 5}},
+        {"id": "q3", "anchor": "a1", "text": "Later?", "status": "snoozed", "topic": "t1"}
+    ],
+    "context": {"kind": "codex", "code": "session"},
+    "log": [{"seq": 1, "at": 1, "actor": "human", "kind": "decision", "text": "started"}]
+}"#;
+
+#[test]
+fn a_layer_from_a_newer_build_loses_nothing() {
+    let doc = deck_with_layer(NEWER);
+    let l = layer::read_from(&doc);
+    assert!(l.origin.unreadable.is_none());
+    // Everything readable is there; the corrupt topic is left out with a warning in the history.
+    let ids: Vec<&str> = l.topics.iter().map(|t| t.id.as_str()).collect();
+    assert_eq!(ids, vec!["t1", "t5"]);
+    assert_eq!(l.questions.len(), 2);
+    assert!(l.log.iter().any(|e| e.kind == "warning" && e.text.contains("t9")), "{:?}", l.log);
+    // Unknown values read as defaults; an unknown context is no context of the deck's own (never
+    // "No context", which would start a background agent).
+    assert_eq!(l.topic("t5").unwrap().status, layer::Status::Open);
+    assert_eq!(l.questions[1].status, layer::QuestionStatus::Pending);
+    assert!(l.context.is_none());
+    // Saved without a change: what the file had goes back, unknown parts included.
+    let mut out = doc.clone();
+    layer::write_into(&mut out, &l);
+    let j = layer_json(&out);
+    let topic = |j: &Json, id: &str| j["topics"].as_array().unwrap().iter().find(|t| t["id"] == json!(id)).cloned().unwrap();
+    assert_eq!(j["futureSetting"], json!({"x": 1}));
+    assert_eq!(j["context"]["kind"], json!("codex"));
+    assert_eq!(topic(&j, "t1")["priority"], json!("high"));
+    assert_eq!(topic(&j, "t9")["places"], json!("this is not a list"));
+    assert_eq!(topic(&j, "t5")["status"], json!("blocked"));
+    assert_eq!(topic(&j, "t5")["status_by"], json!("robot"));
+    assert_eq!(j["questions"][1]["status"], json!("snoozed"));
+    // Changed here: the change is saved, and the rest of the unknown still goes back.
+    let mut l2 = l.clone();
+    l2.topics.iter_mut().find(|t| t.id == "t1").unwrap().status_text = "agreed with legal".into();
+    l2.questions.retain(|q| q.id != "q3");
+    let mut out = doc.clone();
+    layer::write_into(&mut out, &l2);
+    let j = layer_json(&out);
+    let t1 = topic(&j, "t1");
+    assert_eq!((t1["status_text"].clone(), t1["priority"].clone()), (json!("agreed with legal"), json!("high")));
+    assert!(j["topics"].as_array().unwrap().iter().any(|t| t["id"] == json!("t9")), "the entry this build couldn't read stays");
+    assert_eq!(j["questions"].as_array().unwrap().len(), 1, "a question this build removed is gone");
+    assert_eq!(j["futureSetting"], json!({"x": 1}));
+    // Read again: the same.
+    assert_eq!(layer::read_from(&out).topic("t1").unwrap().status_text, "agreed with legal");
+}
+
+#[test]
+fn a_layer_that_cant_be_read_is_never_overwritten() {
+    let bad = r#"{"version": 3, "topics": [ {"id": "t1",  oops this isn't JSON"#;
+    let doc = deck_with_layer(bad);
+    let l = layer::read_from(&doc);
+    assert!(l.origin.unreadable.as_deref().is_some_and(|w| w.contains("isn't valid JSON")), "{:?}", l.origin.unreadable);
+    // Even after changes in this session, the part stays byte for byte.
+    let mut l2 = l.clone();
+    l2.log(crate::Actor::Human, "decision", "something".into(), "x", None, String::new());
+    let mut out = doc.clone();
+    layer::write_into(&mut out, &l2);
+    assert_eq!(doc.kept_parts, out.kept_parts);
+    // Through the app too: opened, changed, saved.
+    let mut s = deckcraft_engine::Session::new();
+    setup();
+    let i = s.add_document(deckcraft_engine::DocState::new(doc.clone(), None, "newer".into()));
+    s.set_active(i);
+    run(&mut s, "agent.addFileContext", json!({"title": "x", "text": "y"}));
+    let bytes = run(&mut s, "file.saveBytes", json!({"format": "pptx"}));
+    assert!(bytes.to_string().len() > 10);
+    let saved = s.doc().unwrap().doc.clone();
+    assert_eq!(
+        saved.kept_parts.iter().filter(|k| k.xml.contains(layer::NS)).map(|k| k.xml.clone()).collect::<Vec<_>>(),
+        vec![doc.kept_parts[0].xml.clone()]
+    );
+    // A layer made only of what this build doesn't know isn't dropped as empty either.
+    let doc = deck_with_layer(r#"{"version": 9, "somethingNew": [1, 2, 3]}"#);
+    let l = layer::read_from(&doc);
+    let mut out = doc.clone();
+    layer::write_into(&mut out, &l);
+    assert_eq!(layer_json(&out)["somethingNew"], json!([1, 2, 3]));
+}
